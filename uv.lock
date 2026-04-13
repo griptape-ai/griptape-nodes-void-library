@@ -187,33 +187,6 @@ wheels = [
 ]
 
 [[package]]
-name = "example-nodes-template"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "griptape-nodes" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "pyright" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "ruff" },
-]
-
-[package.metadata]
-requires-dist = [{ name = "griptape-nodes", git = "https://github.com/griptape-ai/griptape-nodes?rev=latest" }]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "pyright", specifier = ">=1.1.396" },
-    { name = "pytest" },
-    { name = "pytest-asyncio", specifier = ">=0.21.0" },
-    { name = "ruff", specifier = ">=0.8.0" },
-]
-
-[[package]]
 name = "fastapi"
 version = "0.135.1"
 source = { registry = "https://pypi.org/simple" }
@@ -318,6 +291,33 @@ dependencies = [
     { name = "watchfiles" },
     { name = "websockets" },
     { name = "xdg-base-dirs" },
+]
+
+[[package]]
+name = "griptape-nodes-void-library"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "griptape-nodes" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pyright" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "ruff" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "griptape-nodes", git = "https://github.com/griptape-ai/griptape-nodes?rev=latest" }]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pyright", specifier = ">=1.1.396" },
+    { name = "pytest" },
+    { name = "pytest-asyncio", specifier = ">=0.21.0" },
+    { name = "ruff", specifier = ">=0.8.0" },
 ]
 
 [[package]]

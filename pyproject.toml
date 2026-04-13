@@ -1,8 +1,8 @@
 [project]
-name = "example_nodes_template"
+name = "griptape-nodes-void-library"
 version = "0.1.0"
-description = "Template for Users to create Custom Libraries and Nodes"
-authors = [{ name = "Your Name", email = "you@example.com" }]
+description = "Griptape Nodes VOID Library for video inpainting and object removal"
+authors = [{ name = "Griptape, Inc.", email = "hello@griptape.ai" }]
 readme = "README.md"
 requires-python = "~=3.12.0"
 dependencies = ["griptape-nodes"]
@@ -20,6 +20,12 @@ dev = ["pyright>=1.1.396", "pytest-asyncio>=0.21.0", "ruff>=0.8.0", "pytest"]
 [tool.ruff]
 line-length = 120
 target-version = "py312"
+exclude = [
+  ".venv",
+  "**/node_modules",
+  "**/__pycache__",
+  "griptape_nodes_void_library/void-model",
+]
 
 [tool.ruff.lint]
 select = [
@@ -46,6 +52,8 @@ line-ending = "auto"
 venvPath = "."
 venv = ".venv"
 include = ["."]
-exclude = [".venv", "**/node_modules", "**/__pycache__", "**/.*", "templates"]
+exclude = [".venv", "**/node_modules", "**/__pycache__", "**/.*", "templates", "griptape_nodes_void_library/void-model"]
 pythonVersion = "3.12"
 reportIncompatibleMethodOverride = false
+reportMissingImports = false
+reportMissingModuleSource = false

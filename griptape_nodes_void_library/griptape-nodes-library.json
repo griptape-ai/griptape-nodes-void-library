@@ -1,0 +1,50 @@
+{
+    "name": "Griptape Nodes VOID Library",
+    "library_schema_version": "0.5.0",
+    "advanced_library_path": "void_library_advanced.py",
+    "metadata": {
+        "author": "Griptape, Inc.",
+        "description": "VOID is a two-pass video inpainting model that removes objects from videos along with all interactions they induce on the scene -- not just secondary effects like shadows and reflections, but physical interactions such as objects falling when a supporting person is removed. Pass 1 generates a plausible inpainted video, and Pass 2 (optional) refines temporal consistency using warped-noise from the Pass 1 output.",
+        "library_version": "0.1.0",
+        "engine_version": "0.77.5",
+        "tags": ["Griptape", "AI", "Video", "Inpainting", "ObjectRemoval"],
+        "dependencies": {
+            "pip_dependencies": []
+        },
+        "resources": {
+            "required": {
+                "compute": [["cuda"], "has_any"]
+            }
+        }
+    },
+    "categories": [
+        {
+            "void_inpainting": {
+                "color": "border-green-500",
+                "title": "VOID Inpainting",
+                "description": "Physics-aware video object removal with interaction simulation",
+                "icon": "video"
+            }
+        }
+    ],
+    "nodes": [
+        {
+            "class_name": "VoidPass1Node",
+            "file_path": "void_pass1_node.py",
+            "metadata": {
+                "category": "void_inpainting",
+                "description": "Removes a masked object from a video using VOID Pass 1 inference. Takes an input video, a quadmask video (encoding which regions to remove, overlap, affected, or keep), and a text prompt describing the background after removal. Outputs an inpainted video with the object and its physical interactions removed.",
+                "display_name": "VOID Pass 1 Inpainting"
+            }
+        },
+        {
+            "class_name": "VoidPass2Node",
+            "file_path": "void_pass2_node.py",
+            "metadata": {
+                "category": "void_inpainting",
+                "description": "Refines the temporal consistency of a VOID Pass 1 output using Pass 2 warped-noise refinement. Takes the original input video, the quadmask, the Pass 1 output video (used to generate warped optical-flow noise), and a text prompt. Outputs a temporally consistent refined inpainted video.",
+                "display_name": "VOID Pass 2 Refinement"
+            }
+        }
+    ]
+}

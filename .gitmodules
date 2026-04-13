@@ -1,0 +1,3 @@
+[submodule "griptape_nodes_void_library/void-model"]
+	path = griptape_nodes_void_library/void-model
+	url = https://github.com/Netflix/void-model
