@@ -268,11 +268,10 @@ class VoidPass1Node(SuccessFailureNode):
         logger.info("VOID Pass 1 pipeline loaded successfully")
 
     def _video_artifact_to_bytes(self, artifact: VideoUrlArtifact) -> bytes:
-        """Download a VideoUrlArtifact and return raw video bytes."""
-        import urllib.request
+        """Read a VideoUrlArtifact and return raw video bytes."""
+        from griptape_nodes.files.file import File
 
-        with urllib.request.urlopen(artifact.value) as resp:
-            return resp.read()
+        return File(artifact.value).read_bytes()
 
     def _decode_video_to_tensor(self, video_bytes: bytes, height: int, width: int, num_frames: int) -> torch.Tensor:
         """Decode video bytes into a float tensor of shape (1, C, T, H, W) in [0, 1]."""
