@@ -11,6 +11,7 @@ from griptape.artifacts.video_url_artifact import VideoUrlArtifact
 from griptape_nodes.exe_types.core_types import Parameter, ParameterMode
 from griptape_nodes.exe_types.node_types import AsyncResult, SuccessFailureNode
 from griptape_nodes.exe_types.param_components.huggingface.huggingface_repo_parameter import HuggingFaceRepoParameter
+from griptape_nodes.exe_types.param_components.seed_parameter import SeedParameter
 from griptape_nodes.retained_mode.griptape_nodes import GriptapeNodes
 
 logger = logging.getLogger("void_library")
@@ -54,6 +55,8 @@ class VoidPass2Node(SuccessFailureNode):
             parameter_name="void_checkpoint_repo",
         )
         self._void_checkpoint_param.add_input_parameters()
+
+        self._seed_param = SeedParameter(self)
 
         self.add_parameter(
             Parameter(
@@ -158,15 +161,7 @@ class VoidPass2Node(SuccessFailureNode):
             )
         )
 
-        self.add_parameter(
-            Parameter(
-                name="seed",
-                allowed_modes={ParameterMode.INPUT, ParameterMode.PROPERTY},
-                type="int",
-                default_value=42,
-                tooltip="Random seed for reproducible generation.",
-            )
-        )
+        self._seed_param.add_input_parameters()
 
         self.add_parameter(
             Parameter(
@@ -179,6 +174,10 @@ class VoidPass2Node(SuccessFailureNode):
         )
 
         self._create_status_parameters()
+
+    def after_value_set(self, parameter: Parameter, value: Any) -> None:
+        super().after_value_set(parameter, value)
+        self._seed_param.after_value_set(parameter, value)
 
     def validate_before_node_run(self) -> list[Exception] | None:
         """Validate that required inputs are present."""
@@ -522,8 +521,8 @@ class VoidPass2Node(SuccessFailureNode):
         temporal_window_size: int = self.parameter_values.get("temporal_window_size") or 85
         num_inference_steps: int = self.parameter_values.get("num_inference_steps") or 50
         guidance_scale: float = self.parameter_values.get("guidance_scale") or 6.0
-        raw_seed = self.parameter_values.get("seed")
-        seed: int = raw_seed if raw_seed is not None else 42
+        self._seed_param.preprocess()
+        seed: int = self._seed_param.get_seed()
 
         input_video_artifact = self.parameter_values.get("input_video")
         quadmask_artifact = self.parameter_values.get("quadmask_video")
