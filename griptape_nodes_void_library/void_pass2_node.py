@@ -520,6 +520,9 @@ class VoidPass2Node(SuccessFailureNode):
         negative_prompt: str = self.parameter_values.get("negative_prompt") or ""
         height: int = self.parameter_values.get("height") or 384
         width: int = self.parameter_values.get("width") or 672
+        # CogVideoX requires dimensions divisible by 8
+        height = (height // 8) * 8
+        width = (width // 8) * 8
         temporal_window_size: int = self.parameter_values.get("temporal_window_size") or 85
         num_inference_steps: int = self.parameter_values.get("num_inference_steps") or 50
         guidance_scale: float = self.parameter_values.get("guidance_scale") or 6.0
