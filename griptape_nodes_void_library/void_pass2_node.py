@@ -40,6 +40,10 @@ class VoidPass2Node(SuccessFailureNode):
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
 
+        # Must be created before any add_parameter calls because after_value_set
+        # can fire during parameter initialization
+        self._seed_param = SeedParameter(self)
+
         # HuggingFace model selection for base model
         self._base_model_param = HuggingFaceRepoParameter(
             self,
@@ -55,8 +59,6 @@ class VoidPass2Node(SuccessFailureNode):
             parameter_name="void_checkpoint_repo",
         )
         self._void_checkpoint_param.add_input_parameters()
-
-        self._seed_param = SeedParameter(self)
 
         self.add_parameter(
             Parameter(
