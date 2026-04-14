@@ -326,9 +326,12 @@ class VoidPass2Node(SuccessFailureNode):
         return tensor
 
     def _build_mask_tensor(self, quadmask_bytes: bytes, height: int, width: int, num_frames: int) -> torch.Tensor:
-        """Build a binary mask tensor (1, 3, T, H, W) from quadmask video bytes.
+        """Build a normalized quadmask tensor (1, 1, T, H, W) from quadmask video bytes.
 
-        Values below 200 in the grayscale quadmask indicate the mask region.
+        Quadmask pixel values: 0=remove, 63=overlap, 127=affected, 255=keep.
+        The pipeline expects normalized values in [0, 1] where 1.0=remove, 0.0=keep,
+        matching the get_video_mask_input convention from the VOID source (255-x then /255).
+        The mask is 1 channel, not 3.
         """
         import imageio
         import numpy as np
@@ -344,7 +347,8 @@ class VoidPass2Node(SuccessFailureNode):
                 for i, frame in enumerate(reader):
                     if i >= num_frames:
                         break
-                    if frame.ndim == 3 and frame.shape[2] >= 3:
+                    # Take first channel to get grayscale (H, W)
+                    if frame.ndim == 3 and frame.shape[2] >= 1:
                         gray = frame[:, :, 0].astype(np.float32)
                     else:
                         gray = frame.astype(np.float32)
@@ -361,15 +365,24 @@ class VoidPass2Node(SuccessFailureNode):
         while len(frames) < num_frames:
             frames.append(frames[-1])
 
-        frames_np = np.stack(frames, axis=0)  # (T, H, W)
-        mask_np = (frames_np < 200).astype(np.float32)
-        tensor = torch.from_numpy(mask_np).unsqueeze(1)  # (T, 1, H, W)
+        frames_np = np.stack(frames, axis=0).astype(np.float32)  # (T, H, W)
+
+        # Quantize to 4 quadmask values matching VOID's get_video_mask_input
+        mask_np = np.where(frames_np <= 31, 0.0, frames_np)
+        mask_np = np.where((mask_np > 31) & (mask_np <= 95), 63.0, mask_np)
+        mask_np = np.where((mask_np > 95) & (mask_np <= 191), 127.0, mask_np)
+        mask_np = np.where(mask_np > 191, 255.0, mask_np)
+
+        # Invert and normalize: remove (0) -> 1.0, keep (255) -> 0.0
+        mask_np = (255.0 - mask_np) / 255.0
+
+        tensor = torch.from_numpy(mask_np).float().unsqueeze(1)  # (T, 1, H, W)
 
         if tensor.shape[2] != height or tensor.shape[3] != width:
             tensor = torch.nn.functional.interpolate(tensor, size=(height, width), mode="nearest")
 
+        # (T, 1, H, W) -> (1, 1, T, H, W)
         tensor = tensor.permute(1, 0, 2, 3).unsqueeze(0)  # (1, 1, T, H, W)
-        tensor = tensor.expand(-1, 3, -1, -1, -1)  # (1, 3, T, H, W)
         return tensor
 
     def _generate_warped_noise(
