@@ -286,17 +286,23 @@ class VoidPass1Node(SuccessFailureNode):
 
         try:
             reader = imageio.get_reader(tmp_path)
-            frames = []
-            for i, frame in enumerate(reader):
-                if i >= num_frames:
-                    break
-                frames.append(frame)
-            reader.close()
+            try:
+                frames = []
+                for i, frame in enumerate(reader):
+                    if i >= num_frames:
+                        break
+                    frames.append(frame)
+            finally:
+                reader.close()
         finally:
             os.unlink(tmp_path)
 
         if not frames:
             raise ValueError("No frames decoded from video")
+
+        # Pad to num_frames by repeating last frame if video is shorter
+        while len(frames) < num_frames:
+            frames.append(frames[-1])
 
         # Stack frames: (T, H, W, C) -> (T, C, H, W)
         frames_np = np.stack(frames, axis=0).astype(np.float32) / 255.0
@@ -325,22 +331,28 @@ class VoidPass1Node(SuccessFailureNode):
 
         try:
             reader = imageio.get_reader(tmp_path)
-            frames = []
-            for i, frame in enumerate(reader):
-                if i >= num_frames:
-                    break
-                # Convert to grayscale if RGB
-                if frame.ndim == 3 and frame.shape[2] >= 3:
-                    gray = frame[:, :, 0].astype(np.float32)
-                else:
-                    gray = frame.astype(np.float32)
-                frames.append(gray)
-            reader.close()
+            try:
+                frames = []
+                for i, frame in enumerate(reader):
+                    if i >= num_frames:
+                        break
+                    # Convert to grayscale if RGB
+                    if frame.ndim == 3 and frame.shape[2] >= 3:
+                        gray = frame[:, :, 0].astype(np.float32)
+                    else:
+                        gray = frame.astype(np.float32)
+                    frames.append(gray)
+            finally:
+                reader.close()
         finally:
             os.unlink(tmp_path)
 
         if not frames:
             raise ValueError("No frames decoded from quadmask video")
+
+        # Pad to num_frames by repeating last frame if video is shorter
+        while len(frames) < num_frames:
+            frames.append(frames[-1])
 
         frames_np = np.stack(frames, axis=0)  # (T, H, W)
         # Mask region: quadmask < 200 means remove/overlap/affected
@@ -412,7 +424,8 @@ class VoidPass1Node(SuccessFailureNode):
         temporal_window_size: int = self.parameter_values.get("temporal_window_size") or 85
         num_inference_steps: int = self.parameter_values.get("num_inference_steps") or 50
         guidance_scale: float = self.parameter_values.get("guidance_scale") or 1.0
-        seed: int = self.parameter_values.get("seed") or 42
+        raw_seed = self.parameter_values.get("seed")
+        seed: int = raw_seed if raw_seed is not None else 42
 
         input_video_artifact = self.parameter_values.get("input_video")
         quadmask_artifact = self.parameter_values.get("quadmask_video")

@@ -297,17 +297,23 @@ class VoidPass2Node(SuccessFailureNode):
 
         try:
             reader = imageio.get_reader(tmp_path)
-            frames = []
-            for i, frame in enumerate(reader):
-                if i >= num_frames:
-                    break
-                frames.append(frame)
-            reader.close()
+            try:
+                frames = []
+                for i, frame in enumerate(reader):
+                    if i >= num_frames:
+                        break
+                    frames.append(frame)
+            finally:
+                reader.close()
         finally:
             os.unlink(tmp_path)
 
         if not frames:
             raise ValueError("No frames decoded from video")
+
+        # Pad to num_frames by repeating last frame if video is shorter
+        while len(frames) < num_frames:
+            frames.append(frames[-1])
 
         frames_np = np.stack(frames, axis=0).astype(np.float32) / 255.0
         tensor = torch.from_numpy(frames_np).permute(0, 3, 1, 2)  # (T, C, H, W)
@@ -332,21 +338,27 @@ class VoidPass2Node(SuccessFailureNode):
 
         try:
             reader = imageio.get_reader(tmp_path)
-            frames = []
-            for i, frame in enumerate(reader):
-                if i >= num_frames:
-                    break
-                if frame.ndim == 3 and frame.shape[2] >= 3:
-                    gray = frame[:, :, 0].astype(np.float32)
-                else:
-                    gray = frame.astype(np.float32)
-                frames.append(gray)
-            reader.close()
+            try:
+                frames = []
+                for i, frame in enumerate(reader):
+                    if i >= num_frames:
+                        break
+                    if frame.ndim == 3 and frame.shape[2] >= 3:
+                        gray = frame[:, :, 0].astype(np.float32)
+                    else:
+                        gray = frame.astype(np.float32)
+                    frames.append(gray)
+            finally:
+                reader.close()
         finally:
             os.unlink(tmp_path)
 
         if not frames:
             raise ValueError("No frames decoded from quadmask video")
+
+        # Pad to num_frames by repeating last frame if video is shorter
+        while len(frames) < num_frames:
+            frames.append(frames[-1])
 
         frames_np = np.stack(frames, axis=0)  # (T, H, W)
         mask_np = (frames_np < 200).astype(np.float32)
@@ -388,6 +400,7 @@ class VoidPass2Node(SuccessFailureNode):
 
         with tempfile.TemporaryDirectory() as noise_output_dir:
             noise_subdir = os.path.join(noise_output_dir, "warped_noise")
+            os.makedirs(noise_subdir, exist_ok=True)
             cmd = [
                 sys.executable,
                 make_warped_noise_script,
@@ -448,8 +461,8 @@ class VoidPass2Node(SuccessFailureNode):
 
                 warped_noise_np = np.stack(resized_frames, axis=0)
 
-            # (T, H, W, C) -> (1, T, C, H, W)
-            warped_noise_np = warped_noise_np.transpose(0, 3, 1, 2)
+            # (T, H, W, C) -> (C, T, H, W) -> (1, C, T, H, W) matching diffusers latent convention
+            warped_noise_np = warped_noise_np.transpose(3, 0, 1, 2)
             warped_noise = torch.from_numpy(warped_noise_np).float().unsqueeze(0)
             warped_noise = warped_noise.to(device, dtype=dtype)
 
@@ -509,7 +522,8 @@ class VoidPass2Node(SuccessFailureNode):
         temporal_window_size: int = self.parameter_values.get("temporal_window_size") or 85
         num_inference_steps: int = self.parameter_values.get("num_inference_steps") or 50
         guidance_scale: float = self.parameter_values.get("guidance_scale") or 6.0
-        seed: int = self.parameter_values.get("seed") or 42
+        raw_seed = self.parameter_values.get("seed")
+        seed: int = raw_seed if raw_seed is not None else 42
 
         input_video_artifact = self.parameter_values.get("input_video")
         quadmask_artifact = self.parameter_values.get("quadmask_video")
