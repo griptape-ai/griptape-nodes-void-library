@@ -88,14 +88,18 @@ class VoidLibraryAdvanced(AdvancedNodeLibrary):
             return False
         return sentinel.read_text().strip() == self._get_submodule_commit(submodule_path)
 
-    # Training-only packages not needed for inference (and problematic on Windows)
-    SKIP_PACKAGES = {"deepspeed", "came-pytorch", "tensorboard"}
+    # Packages to skip: training-only (problematic on Windows) + torch (handled by framework)
+    SKIP_PACKAGES = {
+        "deepspeed", "came-pytorch", "tensorboard",  # Training-only
+        "torch", "torchvision", "torchaudio",  # Handled by pip_dependencies in JSON
+    }
 
     def _install_from_requirements(self, submodule_path: Path) -> None:
         """Install dependencies from the submodule's requirements.txt.
 
-        Filters out training-only packages (deepspeed, tensorboard, etc.) that
-        aren't needed for inference and cause build issues on Windows.
+        Skips:
+        - Training-only packages (deepspeed, tensorboard) that cause Windows build issues
+        - torch/torchvision (handled by pip_dependencies with --torch-backend=auto)
         """
         requirements_file = submodule_path / "requirements.txt"
         if not requirements_file.exists():
@@ -104,7 +108,7 @@ class VoidLibraryAdvanced(AdvancedNodeLibrary):
         venv_python = self._get_venv_python_path()
         self._ensure_pip()
 
-        # Filter out training-only packages
+        # Filter out skipped packages
         filtered_reqs = []
         with open(requirements_file) as f:
             for line in f:
@@ -114,7 +118,7 @@ class VoidLibraryAdvanced(AdvancedNodeLibrary):
                 # Extract package name (before ==, >=, etc.)
                 pkg_name = line.split("==")[0].split(">=")[0].split("<=")[0].split("[")[0].strip()
                 if pkg_name.lower() in self.SKIP_PACKAGES:
-                    logger.info(f"Skipping training-only package: {pkg_name}")
+                    logger.info(f"Skipping package (handled elsewhere or not needed): {pkg_name}")
                     continue
                 filtered_reqs.append(line)
 

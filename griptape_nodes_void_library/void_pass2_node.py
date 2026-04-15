@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import uuid
+from pathlib import Path
 from typing import Any
 
 from griptape.artifacts.video_url_artifact import VideoUrlArtifact
@@ -203,6 +204,17 @@ class VoidPass2Node(SuccessFailureNode):
             return os.path.join(library_root, ".venv", "Scripts", "python.exe")
         return os.path.join(library_root, ".venv", "bin", "python")
 
+    def _path_for_cli(self, path: str, repo_dir: str) -> str:
+        """Convert path to POSIX-style to avoid Windows drive-letter parsing issues."""
+        try:
+            path_resolved = Path(path).resolve()
+            repo_resolved = Path(repo_dir).resolve()
+            rel = path_resolved.relative_to(repo_resolved)
+            return rel.as_posix()
+        except ValueError:
+            # Path is not relative to repo_dir, use absolute with forward slashes
+            return str(path).replace("\\", "/")
+
     def process(self) -> AsyncResult[None]:
         yield lambda: self._run_inference()
 
@@ -276,22 +288,30 @@ class VoidPass2Node(SuccessFailureNode):
             with open(pass1_video_path, "wb") as f:
                 f.write(pass1_video_bytes)
 
+            # Convert all paths to POSIX-style to avoid Windows parsing issues
+            data_root_cli = self._path_for_cli(data_root, submodule_root)
+            pass1_dir_cli = self._path_for_cli(pass1_dir, submodule_root)
+            save_dir_cli = self._path_for_cli(save_dir, submodule_root)
+            base_model_cli = self._path_for_cli(base_model_path, submodule_root)
+            checkpoint_cli = self._path_for_cli(void_checkpoint_path, submodule_root)
+            noise_cache_cli = self._path_for_cli(noise_cache_dir, submodule_root)
+
             cmd = [
                 self._get_venv_python(),
                 script_path,
                 "--video_name", seq_name,
-                "--data_rootdir", data_root,
-                "--pass1_dir", pass1_dir,
-                "--output_dir", save_dir,
-                "--model_name", base_model_path,
-                "--model_checkpoint", void_checkpoint_path,
+                "--data_rootdir", data_root_cli,
+                "--pass1_dir", pass1_dir_cli,
+                "--output_dir", save_dir_cli,
+                "--model_name", base_model_cli,
+                "--model_checkpoint", checkpoint_cli,
                 "--height", str(height),
                 "--width", str(width),
                 "--temporal_window_size", str(temporal_window_size),
                 "--num_inference_steps", str(num_inference_steps),
                 "--guidance_scale", str(guidance_scale),
                 "--seed", str(seed),
-                "--warped_noise_cache_dir", noise_cache_dir,
+                "--warped_noise_cache_dir", noise_cache_cli,
                 "--use_quadmask",
             ]
 
@@ -302,6 +322,15 @@ class VoidPass2Node(SuccessFailureNode):
                 if existing_pythonpath
                 else submodule_root
             )
+
+            # Add ffmpeg to PATH for mediapy (uses static_ffmpeg bundled binary)
+            try:
+                import static_ffmpeg
+                ffmpeg_path, _ = static_ffmpeg.run.get_or_fetch_platform_executables_else_raise()
+                ffmpeg_dir = os.path.dirname(ffmpeg_path)
+                env["PATH"] = ffmpeg_dir + os.pathsep + env.get("PATH", "")
+            except (ImportError, FileNotFoundError, OSError) as e:
+                logger.warning(f"static_ffmpeg not available, ffmpeg may not be found: {e}")
 
             logger.info(f"Running VOID Pass 2: {height}x{width}, {temporal_window_size} frames")
             logger.info(f"Command: {' '.join(cmd)}")
