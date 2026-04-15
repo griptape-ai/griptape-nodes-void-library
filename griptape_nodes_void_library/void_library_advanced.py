@@ -1,4 +1,5 @@
 import logging
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -87,11 +88,14 @@ class VoidLibraryAdvanced(AdvancedNodeLibrary):
             return False
         return sentinel.read_text().strip() == self._get_submodule_commit(submodule_path)
 
+    # Training-only packages not needed for inference (and problematic on Windows)
+    SKIP_PACKAGES = {"deepspeed", "came-pytorch", "tensorboard"}
+
     def _install_from_requirements(self, submodule_path: Path) -> None:
         """Install dependencies from the submodule's requirements.txt.
 
-        This preserves platform markers, version pins, and extra-index-url
-        directives exactly as the model author specified.
+        Filters out training-only packages (deepspeed, tensorboard, etc.) that
+        aren't needed for inference and cause build issues on Windows.
         """
         requirements_file = submodule_path / "requirements.txt"
         if not requirements_file.exists():
@@ -99,9 +103,33 @@ class VoidLibraryAdvanced(AdvancedNodeLibrary):
             return
         venv_python = self._get_venv_python_path()
         self._ensure_pip()
-        logger.info(f"Installing requirements from {requirements_file}...")
-        subprocess.check_call([str(venv_python), "-m", "pip", "install", "-r", str(requirements_file)])
-        logger.info("Requirements installed successfully")
+
+        # Filter out training-only packages
+        filtered_reqs = []
+        with open(requirements_file) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                # Extract package name (before ==, >=, etc.)
+                pkg_name = line.split("==")[0].split(">=")[0].split("<=")[0].split("[")[0].strip()
+                if pkg_name.lower() in self.SKIP_PACKAGES:
+                    logger.info(f"Skipping training-only package: {pkg_name}")
+                    continue
+                filtered_reqs.append(line)
+
+        # Write filtered requirements to temp file and install
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as tmp:
+            tmp.write("\n".join(filtered_reqs))
+            tmp_path = tmp.name
+
+        try:
+            logger.info(f"Installing inference requirements ({len(filtered_reqs)} packages)...")
+            subprocess.check_call([str(venv_python), "-m", "pip", "install", "-r", tmp_path])
+            logger.info("Requirements installed successfully")
+        finally:
+            os.unlink(tmp_path)
 
     def _install_package(self, submodule_path: Path) -> None:
         if str(submodule_path) not in sys.path:
