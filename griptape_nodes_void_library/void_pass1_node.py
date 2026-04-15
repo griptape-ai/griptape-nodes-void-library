@@ -1,10 +1,13 @@
+import glob
+import json
 import logging
 import os
+import subprocess
+import sys
 import tempfile
 import uuid
 from typing import Any
 
-import torch
 from griptape.artifacts.video_url_artifact import VideoUrlArtifact
 from griptape_nodes.exe_types.core_types import Parameter, ParameterMode
 from griptape_nodes.exe_types.node_types import AsyncResult, SuccessFailureNode
@@ -32,10 +35,6 @@ class VoidPass1Node(SuccessFailureNode):
     interactions removed.
     """
 
-    # Class-level pipeline cache keyed on (base_model_id, void_checkpoint_repo)
-    _pipeline_cache: dict[tuple[str, str], Any] = {}
-    _vae_cache: dict[tuple[str, str], Any] = {}
-
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
 
@@ -43,7 +42,6 @@ class VoidPass1Node(SuccessFailureNode):
         # can fire during parameter initialization
         self._seed_param = SeedParameter(self)
 
-        # HuggingFace model selection for base model
         self._base_model_param = HuggingFaceRepoParameter(
             self,
             repo_ids=BASE_MODEL_REPO_IDS,
@@ -51,7 +49,6 @@ class VoidPass1Node(SuccessFailureNode):
         )
         self._base_model_param.add_input_parameters()
 
-        # HuggingFace model selection for VOID checkpoint
         self._void_checkpoint_param = HuggingFaceRepoParameter(
             self,
             repo_ids=VOID_CHECKPOINT_REPO_IDS,
@@ -136,7 +133,7 @@ class VoidPass1Node(SuccessFailureNode):
                 name="num_inference_steps",
                 allowed_modes={ParameterMode.INPUT, ParameterMode.PROPERTY},
                 type="int",
-                default_value=50,
+                default_value=30,
                 tooltip="Number of diffusion denoising steps.",
             )
         )
@@ -170,7 +167,6 @@ class VoidPass1Node(SuccessFailureNode):
         self._seed_param.after_value_set(parameter, value)
 
     def validate_before_node_run(self) -> list[Exception] | None:
-        """Validate that required inputs are present."""
         errors: list[Exception] = []
 
         base_errors = self._base_model_param.validate_before_node_run()
@@ -192,253 +188,46 @@ class VoidPass1Node(SuccessFailureNode):
 
         return errors if errors else None
 
-    def _get_submodule_root(self) -> str:
-        """Return the absolute path to the void-model submodule."""
+    def _get_library_root(self) -> str:
         assert __file__ is not None
-        return os.path.join(os.path.dirname(__file__), "void-model")
+        return os.path.dirname(__file__)
 
-    def _load_pipeline(self, base_model_path: str, void_checkpoint_path: str, cache_key: tuple[str, str]) -> None:
-        """Load and cache the VOID Pass 1 pipeline."""
-        # DEFERRED IMPORTS: these are from the submodule and pip deps that only
-        # exist after the advanced library has initialized the environment.
-        import sys
+    def _get_submodule_root(self) -> str:
+        return os.path.join(self._get_library_root(), "void-model")
 
-        submodule_root = self._get_submodule_root()
-        if submodule_root not in sys.path:
-            sys.path.insert(0, submodule_root)
-
-        from diffusers import DDIMScheduler
-        from safetensors.torch import load_file
-        from videox_fun.models import AutoencoderKLCogVideoX, CogVideoXTransformer3DModel, T5EncoderModel, T5Tokenizer
-        from videox_fun.pipeline import CogVideoXFunInpaintPipeline
-        from videox_fun.utils.fp8_optimization import convert_weight_dtype_wrapper
-
-        logger.info(f"Loading VOID Pass 1 pipeline from {base_model_path}")
-
-        transformer = CogVideoXTransformer3DModel.from_pretrained(
-            base_model_path,
-            subfolder="transformer",
-            low_cpu_mem_usage=True,
-            torch_dtype=torch.bfloat16,
-            use_vae_mask=True,
-        ).to(torch.bfloat16)
-
-        # Load VOID Pass 1 checkpoint weights on top of the base transformer
-        logger.info(f"Loading VOID Pass 1 checkpoint: {void_checkpoint_path}")
-        state_dict = load_file(void_checkpoint_path)
-        state_dict = state_dict.get("state_dict", state_dict)
-
-        param_name = "patch_embed.proj.weight"
-        if param_name in state_dict and state_dict[param_name].size(1) != transformer.state_dict()[param_name].size(1):
-            logger.info(f"Adapting {param_name} for channel mismatch")
-            latent_ch = 16
-            feat_scale = 8
-            feat_dim = int(latent_ch * feat_scale)
-            new_weight = transformer.state_dict()[param_name].clone()
-            new_weight[:, :feat_dim] = state_dict[param_name][:, :feat_dim]
-            new_weight[:, -feat_dim:] = state_dict[param_name][:, -feat_dim:]
-            state_dict[param_name] = new_weight
-
-        transformer.load_state_dict(state_dict, strict=False)
-
-        vae = AutoencoderKLCogVideoX.from_pretrained(
-            base_model_path,
-            subfolder="vae",
-        ).to(torch.bfloat16)
-
-        tokenizer = T5Tokenizer.from_pretrained(base_model_path, subfolder="tokenizer")
-        text_encoder = T5EncoderModel.from_pretrained(
-            base_model_path,
-            subfolder="text_encoder",
-            torch_dtype=torch.bfloat16,
-        )
-        scheduler = DDIMScheduler.from_pretrained(base_model_path, subfolder="scheduler")
-
-        pipe = CogVideoXFunInpaintPipeline(
-            tokenizer=tokenizer,
-            text_encoder=text_encoder,
-            vae=vae,
-            transformer=transformer,
-            scheduler=scheduler,
-        )
-        convert_weight_dtype_wrapper(pipe.transformer, torch.bfloat16)
-        pipe.enable_model_cpu_offload(device="cuda")
-
-        VoidPass1Node._pipeline_cache[cache_key] = pipe
-        VoidPass1Node._vae_cache[cache_key] = vae
-        logger.info("VOID Pass 1 pipeline loaded successfully")
-
-    def _video_artifact_to_bytes(self, artifact: VideoUrlArtifact) -> bytes:
-        """Read a VideoUrlArtifact and return raw video bytes."""
-        from griptape_nodes.files.file import File
-
-        return File(artifact.value).read_bytes()
-
-    def _decode_video_to_tensor(self, video_bytes: bytes, height: int, width: int, num_frames: int) -> torch.Tensor:
-        """Decode video bytes into a float tensor of shape (1, C, T, H, W) in [0, 1]."""
-
-        import imageio
-        import numpy as np
-        import torch.nn.functional as F
-
-        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
-            tmp.write(video_bytes)
-            tmp_path = tmp.name
-
-        try:
-            reader = imageio.get_reader(tmp_path)
-            try:
-                frames = []
-                for i, frame in enumerate(reader):
-                    if i >= num_frames:
-                        break
-                    frames.append(frame)
-            finally:
-                reader.close()
-        finally:
-            os.unlink(tmp_path)
-
-        if not frames:
-            raise ValueError("No frames decoded from video")
-
-        # Pad to num_frames by repeating last frame if video is shorter
-        while len(frames) < num_frames:
-            frames.append(frames[-1])
-
-        # Stack frames: (T, H, W, C) -> (T, C, H, W)
-        frames_np = np.stack(frames, axis=0).astype(np.float32) / 255.0
-        tensor = torch.from_numpy(frames_np).permute(0, 3, 1, 2)  # (T, C, H, W)
-
-        # Resize spatially if needed
-        if tensor.shape[2] != height or tensor.shape[3] != width:
-            tensor = F.interpolate(tensor, size=(height, width), mode="bilinear", align_corners=False)
-
-        # Add batch dim: (1, C, T, H, W)
-        tensor = tensor.permute(1, 0, 2, 3).unsqueeze(0)
-        return tensor
-
-    def _build_mask_tensor(self, quadmask_bytes: bytes, height: int, width: int, num_frames: int) -> torch.Tensor:
-        """Build a normalized quadmask tensor (1, 1, T, H, W) from quadmask video bytes.
-
-        Quadmask pixel values: 0=remove, 63=overlap, 127=affected, 255=keep.
-        The pipeline expects normalized values in [0, 1] where 1.0=remove, 0.0=keep,
-        matching the get_video_mask_input convention from the VOID source (255-x then /255).
-        The mask is 1 channel, not 3.
-        """
-
-        import imageio
-        import numpy as np
-
-        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
-            tmp.write(quadmask_bytes)
-            tmp_path = tmp.name
-
-        try:
-            reader = imageio.get_reader(tmp_path)
-            try:
-                frames = []
-                for i, frame in enumerate(reader):
-                    if i >= num_frames:
-                        break
-                    # Take first channel to get grayscale (H, W)
-                    if frame.ndim == 3 and frame.shape[2] >= 1:
-                        gray = frame[:, :, 0].astype(np.float32)
-                    else:
-                        gray = frame.astype(np.float32)
-                    frames.append(gray)
-            finally:
-                reader.close()
-        finally:
-            os.unlink(tmp_path)
-
-        if not frames:
-            raise ValueError("No frames decoded from quadmask video")
-
-        # Pad to num_frames by repeating last frame if video is shorter
-        while len(frames) < num_frames:
-            frames.append(frames[-1])
-
-        frames_np = np.stack(frames, axis=0).astype(np.float32)  # (T, H, W)
-
-        # Quantize to 4 quadmask values matching VOID's get_video_mask_input
-        mask_np = np.where(frames_np <= 31, 0.0, frames_np)
-        mask_np = np.where((mask_np > 31) & (mask_np <= 95), 63.0, mask_np)
-        mask_np = np.where((mask_np > 95) & (mask_np <= 191), 127.0, mask_np)
-        mask_np = np.where(mask_np > 191, 255.0, mask_np)
-
-        # Invert and normalize: remove (0) -> 1.0, keep (255) -> 0.0
-        mask_np = (255.0 - mask_np) / 255.0
-
-        tensor = torch.from_numpy(mask_np).float().unsqueeze(1)  # (T, 1, H, W)
-
-        # Resize spatially if needed
-        if tensor.shape[2] != height or tensor.shape[3] != width:
-            tensor = torch.nn.functional.interpolate(tensor, size=(height, width), mode="nearest")
-
-        # (T, 1, H, W) -> (1, 1, T, H, W)
-        tensor = tensor.permute(1, 0, 2, 3).unsqueeze(0)  # (1, 1, T, H, W)
-        return tensor
-
-    def _tensor_to_mp4_bytes(self, tensor: torch.Tensor, fps: int = 12) -> bytes:
-        """Encode a video tensor (T, H, W, C) or (1, C, T, H, W) in [0,1] to MP4 bytes."""
-        import io
-
-        import imageio
-        import numpy as np
-
-        # Accept (1, C, T, H, W) or (T, H, W, C) shaped tensors
-        if tensor.dim() == 5:
-            # (1, C, T, H, W) -> (T, H, W, C)
-            tensor = tensor[0].permute(1, 2, 3, 0)
-
-        video_np = tensor.clamp(0, 1).cpu().numpy()
-        video_np = (video_np * 255).astype(np.uint8)
-
-        buf = io.BytesIO()
-        writer = imageio.get_writer(buf, format="mp4", fps=fps, codec="libx264", quality=8, pixelformat="yuv420p")
-        for frame in video_np:
-            writer.append_data(frame)
-        writer.close()
-        buf.seek(0)
-        return buf.read()
+    def _get_venv_python(self) -> str:
+        library_root = self._get_library_root()
+        if sys.platform == "win32":
+            return os.path.join(library_root, ".venv", "Scripts", "python.exe")
+        return os.path.join(library_root, ".venv", "bin", "python")
 
     def process(self) -> AsyncResult[None]:
-        """Kick off async inference."""
         yield lambda: self._run_inference()
 
     def _run_inference(self) -> None:
-        """Run VOID Pass 1 inference in a background thread."""
+        from griptape_nodes.files.file import File
         from huggingface_hub import hf_hub_download, snapshot_download
+
+        self._seed_param.preprocess()
+        seed: int = self._seed_param.get_seed()
 
         base_model_id, _ = self._base_model_param.get_repo_revision()
         void_checkpoint_repo, _ = self._void_checkpoint_param.get_repo_revision()
 
-        cache_key = (base_model_id, void_checkpoint_repo)
+        logger.info(f"Downloading base model: {base_model_id}")
+        base_model_path = snapshot_download(base_model_id)
 
-        if cache_key not in VoidPass1Node._pipeline_cache:
-            logger.info(f"Downloading base model: {base_model_id}")
-            base_model_path = snapshot_download(base_model_id)
-
-            logger.info(f"Downloading VOID Pass 1 checkpoint from: {void_checkpoint_repo}")
-            void_checkpoint_path = hf_hub_download(void_checkpoint_repo, "void_pass1.safetensors")
-
-            self._load_pipeline(base_model_path, void_checkpoint_path, cache_key)
-
-        pipe = VoidPass1Node._pipeline_cache[cache_key]
-        vae = VoidPass1Node._vae_cache[cache_key]
+        logger.info(f"Downloading VOID Pass 1 checkpoint from: {void_checkpoint_repo}")
+        void_checkpoint_path = hf_hub_download(void_checkpoint_repo, "void_pass1.safetensors")
 
         prompt: str = self.parameter_values.get("prompt") or ""
         negative_prompt: str = self.parameter_values.get("negative_prompt") or ""
         height: int = self.parameter_values.get("height") or 384
         width: int = self.parameter_values.get("width") or 672
-        # CogVideoX requires dimensions divisible by 8
         height = (height // 8) * 8
         width = (width // 8) * 8
         temporal_window_size: int = self.parameter_values.get("temporal_window_size") or 85
-        num_inference_steps: int = self.parameter_values.get("num_inference_steps") or 50
         guidance_scale: float = self.parameter_values.get("guidance_scale") or 1.0
-        self._seed_param.preprocess()
-        seed: int = self._seed_param.get_seed()
 
         input_video_artifact = self.parameter_values.get("input_video")
         quadmask_artifact = self.parameter_values.get("quadmask_video")
@@ -448,43 +237,89 @@ class VoidPass1Node(SuccessFailureNode):
         if not isinstance(quadmask_artifact, VideoUrlArtifact):
             raise ValueError("quadmask_video is required")
 
-        input_video_bytes = self._video_artifact_to_bytes(input_video_artifact)
-        quadmask_bytes = self._video_artifact_to_bytes(quadmask_artifact)
+        input_video_bytes = File(input_video_artifact.value).read_bytes()
+        quadmask_bytes = File(quadmask_artifact.value).read_bytes()
 
-        # Align video length to VAE temporal compression
-        max_video_length = temporal_window_size
-        video_length = (
-            int((max_video_length - 1) // vae.config.temporal_compression_ratio * vae.config.temporal_compression_ratio)
-            + 1
-        )
-        logger.info(f"Aligned video length: {video_length}")
+        submodule_root = self._get_submodule_root()
+        config_path = os.path.join(submodule_root, "config", "quadmask_cogvideox.py")
+        script_path = os.path.join(submodule_root, "inference", "cogvideox_fun", "predict_v2v.py")
 
-        input_video_tensor = self._decode_video_to_tensor(input_video_bytes, height, width, video_length)
-        mask_tensor = self._build_mask_tensor(quadmask_bytes, height, width, video_length)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            seq_name = "job0"
+            data_root = os.path.join(tmp_dir, "void_data")
+            seq_dir = os.path.join(data_root, seq_name)
+            save_dir = os.path.join(tmp_dir, "void_outputs")
+            os.makedirs(seq_dir, exist_ok=True)
+            os.makedirs(save_dir, exist_ok=True)
 
-        logger.info(
-            f"Running VOID Pass 1 inference: {height}x{width}, {temporal_window_size} frames, "
-            f"{num_inference_steps} steps"
-        )
+            with open(os.path.join(seq_dir, "input_video.mp4"), "wb") as f:
+                f.write(input_video_bytes)
 
-        with torch.no_grad():
-            sample = pipe(
-                prompt,
-                num_frames=temporal_window_size,
-                negative_prompt=negative_prompt,
-                height=height,
-                width=width,
-                generator=torch.Generator(device="cuda").manual_seed(seed),
-                guidance_scale=guidance_scale,
-                num_inference_steps=num_inference_steps,
-                video=input_video_tensor,
-                mask_video=mask_tensor,
-                strength=1.0,
-                use_trimask=True,
-                use_vae_mask=True,
-            ).videos
+            with open(os.path.join(seq_dir, "quadmask_0.mp4"), "wb") as f:
+                f.write(quadmask_bytes)
 
-        mp4_bytes = self._tensor_to_mp4_bytes(sample, fps=12)
+            with open(os.path.join(seq_dir, "prompt.json"), "w", encoding="utf-8") as f:
+                json.dump({"bg": prompt or "clean background"}, f)
+
+            cmd = [
+                self._get_venv_python(),
+                script_path,
+                "--config", config_path,
+                f"--config.video_model.model_name={base_model_path}",
+                f"--config.video_model.transformer_path={void_checkpoint_path}",
+                f"--config.data.data_rootdir={data_root}",
+                f"--config.experiment.run_seqs={seq_name}",
+                f"--config.experiment.save_path={save_dir}",
+                f"--config.data.sample_size={height}x{width}",
+                f"--config.video_model.temporal_window_size={temporal_window_size}",
+                f"--config.video_model.guidance_scale={guidance_scale}",
+                f"--config.system.seed={seed}",
+            ]
+            if negative_prompt:
+                cmd.append(f"--config.video_model.negative_prompt={negative_prompt}")
+
+            env = os.environ.copy()
+            existing_pythonpath = env.get("PYTHONPATH", "")
+            env["PYTHONPATH"] = (
+                submodule_root + os.pathsep + existing_pythonpath
+                if existing_pythonpath
+                else submodule_root
+            )
+
+            logger.info(f"Running VOID Pass 1: {height}x{width}, {temporal_window_size} frames")
+            logger.info(f"Command: {' '.join(cmd)}")
+
+            result = subprocess.run(
+                cmd,
+                cwd=submodule_root,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=3600,
+            )
+
+            if result.stdout:
+                logger.info(result.stdout[-10000:])
+            if result.stderr:
+                logger.warning(result.stderr[-10000:])
+
+            if result.returncode != 0:
+                tail = (result.stderr or result.stdout or "")[-3000:]
+                raise RuntimeError(f"VOID Pass 1 failed (exit {result.returncode}):\n{tail}")
+
+            output_candidates = [
+                p for p in glob.glob(os.path.join(save_dir, "*.mp4"))
+                if not p.endswith("_tuple.mp4")
+            ]
+
+            if not output_candidates:
+                raise RuntimeError(f"VOID Pass 1 produced no output video in: {save_dir}")
+
+            output_candidates.sort(key=os.path.getmtime, reverse=True)
+            output_path = output_candidates[0]
+
+            with open(output_path, "rb") as f:
+                mp4_bytes = f.read()
 
         filename = f"void_pass1_{uuid.uuid4().hex[:8]}.mp4"
         url = GriptapeNodes.StaticFilesManager().save_static_file(mp4_bytes, filename)

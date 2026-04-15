@@ -1,3 +1,5 @@
+import glob
+import json
 import logging
 import os
 import subprocess
@@ -6,7 +8,6 @@ import tempfile
 import uuid
 from typing import Any
 
-import torch
 from griptape.artifacts.video_url_artifact import VideoUrlArtifact
 from griptape_nodes.exe_types.core_types import Parameter, ParameterMode
 from griptape_nodes.exe_types.node_types import AsyncResult, SuccessFailureNode
@@ -28,14 +29,9 @@ VOID_CHECKPOINT_REPO_IDS = [
 class VoidPass2Node(SuccessFailureNode):
     """Refines temporal consistency of a VOID Pass 1 output using Pass 2 warped-noise refinement.
 
-    Takes the original input video, the quadmask, the Pass 1 output video (used to generate
-    warped optical-flow noise), and a text prompt. Outputs a temporally consistent refined
-    inpainted video.
+    Takes the original input video, the quadmask, and the Pass 1 output video (used to generate
+    warped optical-flow noise). Outputs a temporally consistent refined inpainted video.
     """
-
-    # Class-level pipeline cache keyed on (base_model_id, void_checkpoint_repo)
-    _pipeline_cache: dict[tuple[str, str], Any] = {}
-    _vae_cache: dict[tuple[str, str], Any] = {}
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
@@ -44,7 +40,6 @@ class VoidPass2Node(SuccessFailureNode):
         # can fire during parameter initialization
         self._seed_param = SeedParameter(self)
 
-        # HuggingFace model selection for base model
         self._base_model_param = HuggingFaceRepoParameter(
             self,
             repo_ids=BASE_MODEL_REPO_IDS,
@@ -52,7 +47,6 @@ class VoidPass2Node(SuccessFailureNode):
         )
         self._base_model_param.add_input_parameters()
 
-        # HuggingFace model selection for VOID checkpoint
         self._void_checkpoint_param = HuggingFaceRepoParameter(
             self,
             repo_ids=VOID_CHECKPOINT_REPO_IDS,
@@ -100,16 +94,6 @@ class VoidPass2Node(SuccessFailureNode):
                 type="str",
                 default_value="",
                 tooltip="Text description of the background after removal (same prompt as Pass 1).",
-            )
-        )
-
-        self.add_parameter(
-            Parameter(
-                name="negative_prompt",
-                allowed_modes={ParameterMode.INPUT, ParameterMode.PROPERTY},
-                type="str",
-                default_value="The video is not of a high quality, it has a low resolution. Watermark present in each frame. The background is solid. Strange body and strange trajectory. Distortion.",
-                tooltip="Text prompt describing what to avoid in the output.",
             )
         )
 
@@ -182,7 +166,6 @@ class VoidPass2Node(SuccessFailureNode):
         self._seed_param.after_value_set(parameter, value)
 
     def validate_before_node_run(self) -> list[Exception] | None:
-        """Validate that required inputs are present."""
         errors: list[Exception] = []
 
         base_errors = self._base_model_param.validate_before_node_run()
@@ -207,340 +190,46 @@ class VoidPass2Node(SuccessFailureNode):
 
         return errors if errors else None
 
-    def _get_submodule_root(self) -> str:
-        """Return the absolute path to the void-model submodule."""
+    def _get_library_root(self) -> str:
         assert __file__ is not None
-        return os.path.join(os.path.dirname(__file__), "void-model")
+        return os.path.dirname(__file__)
 
-    def _load_pipeline(self, base_model_path: str, void_checkpoint_path: str, cache_key: tuple[str, str]) -> None:
-        """Load and cache the VOID Pass 2 pipeline."""
-        # DEFERRED IMPORTS: these are from the submodule and pip deps that only
-        # exist after the advanced library has initialized the environment.
-        submodule_root = self._get_submodule_root()
-        if submodule_root not in sys.path:
-            sys.path.insert(0, submodule_root)
+    def _get_submodule_root(self) -> str:
+        return os.path.join(self._get_library_root(), "void-model")
 
-        from diffusers import CogVideoXDDIMScheduler
-        from safetensors.torch import load_file
-        from videox_fun.models import AutoencoderKLCogVideoX, CogVideoXTransformer3DModel, T5EncoderModel, T5Tokenizer
-        from videox_fun.pipeline import CogVideoXFunInpaintPipeline
-
-        logger.info(f"Loading VOID Pass 2 pipeline from {base_model_path}")
-
-        transformer = CogVideoXTransformer3DModel.from_pretrained(
-            base_model_path,
-            subfolder="transformer",
-            low_cpu_mem_usage=True,
-            torch_dtype=torch.bfloat16,
-            use_vae_mask=True,
-            stack_mask=False,
-        ).to(torch.bfloat16)
-
-        # Load VOID Pass 2 checkpoint weights on top of the base transformer
-        logger.info(f"Loading VOID Pass 2 checkpoint: {void_checkpoint_path}")
-        state_dict = load_file(void_checkpoint_path)
-        state_dict = state_dict.get("state_dict", state_dict)
-
-        param_name = "patch_embed.proj.weight"
-        if param_name in state_dict and state_dict[param_name].size(1) != transformer.state_dict()[param_name].size(1):
-            logger.info(f"Adapting {param_name} for channel mismatch")
-            latent_ch = 16
-            feat_scale = 8
-            feat_dim = int(latent_ch * feat_scale)
-            new_weight = transformer.state_dict()[param_name].clone()
-            new_weight[:, :feat_dim] = state_dict[param_name][:, :feat_dim]
-            new_weight[:, -feat_dim:] = state_dict[param_name][:, -feat_dim:]
-            state_dict[param_name] = new_weight
-
-        transformer.load_state_dict(state_dict, strict=False)
-
-        vae = AutoencoderKLCogVideoX.from_pretrained(
-            base_model_path,
-            subfolder="vae",
-        ).to(torch.bfloat16)
-
-        tokenizer = T5Tokenizer.from_pretrained(base_model_path, subfolder="tokenizer")
-        text_encoder = T5EncoderModel.from_pretrained(
-            base_model_path,
-            subfolder="text_encoder",
-            torch_dtype=torch.bfloat16,
-        )
-        scheduler = CogVideoXDDIMScheduler.from_pretrained(base_model_path, subfolder="scheduler")
-
-        pipe = CogVideoXFunInpaintPipeline(
-            tokenizer=tokenizer,
-            text_encoder=text_encoder,
-            vae=vae,
-            transformer=transformer,
-            scheduler=scheduler,
-        )
-        pipe.enable_model_cpu_offload(device="cuda")
-
-        VoidPass2Node._pipeline_cache[cache_key] = pipe
-        VoidPass2Node._vae_cache[cache_key] = vae
-        logger.info("VOID Pass 2 pipeline loaded successfully")
-
-    def _video_artifact_to_bytes(self, artifact: VideoUrlArtifact) -> bytes:
-        """Read a VideoUrlArtifact and return raw video bytes."""
-        from griptape_nodes.files.file import File
-
-        return File(artifact.value).read_bytes()
-
-    def _decode_video_to_tensor(self, video_bytes: bytes, height: int, width: int, num_frames: int) -> torch.Tensor:
-        """Decode video bytes into a float tensor of shape (1, C, T, H, W) in [0, 1]."""
-        import imageio
-        import numpy as np
-        import torch.nn.functional as F
-
-        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
-            tmp.write(video_bytes)
-            tmp_path = tmp.name
-
-        try:
-            reader = imageio.get_reader(tmp_path)
-            try:
-                frames = []
-                for i, frame in enumerate(reader):
-                    if i >= num_frames:
-                        break
-                    frames.append(frame)
-            finally:
-                reader.close()
-        finally:
-            os.unlink(tmp_path)
-
-        if not frames:
-            raise ValueError("No frames decoded from video")
-
-        # Pad to num_frames by repeating last frame if video is shorter
-        while len(frames) < num_frames:
-            frames.append(frames[-1])
-
-        frames_np = np.stack(frames, axis=0).astype(np.float32) / 255.0
-        tensor = torch.from_numpy(frames_np).permute(0, 3, 1, 2)  # (T, C, H, W)
-
-        if tensor.shape[2] != height or tensor.shape[3] != width:
-            tensor = F.interpolate(tensor, size=(height, width), mode="bilinear", align_corners=False)
-
-        tensor = tensor.permute(1, 0, 2, 3).unsqueeze(0)  # (1, C, T, H, W)
-        return tensor
-
-    def _build_mask_tensor(self, quadmask_bytes: bytes, height: int, width: int, num_frames: int) -> torch.Tensor:
-        """Build a normalized quadmask tensor (1, 1, T, H, W) from quadmask video bytes.
-
-        Quadmask pixel values: 0=remove, 63=overlap, 127=affected, 255=keep.
-        The pipeline expects normalized values in [0, 1] where 1.0=remove, 0.0=keep,
-        matching the get_video_mask_input convention from the VOID source (255-x then /255).
-        The mask is 1 channel, not 3.
-        """
-        import imageio
-        import numpy as np
-
-        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
-            tmp.write(quadmask_bytes)
-            tmp_path = tmp.name
-
-        try:
-            reader = imageio.get_reader(tmp_path)
-            try:
-                frames = []
-                for i, frame in enumerate(reader):
-                    if i >= num_frames:
-                        break
-                    # Take first channel to get grayscale (H, W)
-                    if frame.ndim == 3 and frame.shape[2] >= 1:
-                        gray = frame[:, :, 0].astype(np.float32)
-                    else:
-                        gray = frame.astype(np.float32)
-                    frames.append(gray)
-            finally:
-                reader.close()
-        finally:
-            os.unlink(tmp_path)
-
-        if not frames:
-            raise ValueError("No frames decoded from quadmask video")
-
-        # Pad to num_frames by repeating last frame if video is shorter
-        while len(frames) < num_frames:
-            frames.append(frames[-1])
-
-        frames_np = np.stack(frames, axis=0).astype(np.float32)  # (T, H, W)
-
-        # Quantize to 4 quadmask values matching VOID's get_video_mask_input
-        mask_np = np.where(frames_np <= 31, 0.0, frames_np)
-        mask_np = np.where((mask_np > 31) & (mask_np <= 95), 63.0, mask_np)
-        mask_np = np.where((mask_np > 95) & (mask_np <= 191), 127.0, mask_np)
-        mask_np = np.where(mask_np > 191, 255.0, mask_np)
-
-        # Invert and normalize: remove (0) -> 1.0, keep (255) -> 0.0
-        mask_np = (255.0 - mask_np) / 255.0
-
-        tensor = torch.from_numpy(mask_np).float().unsqueeze(1)  # (T, 1, H, W)
-
-        if tensor.shape[2] != height or tensor.shape[3] != width:
-            tensor = torch.nn.functional.interpolate(tensor, size=(height, width), mode="nearest")
-
-        # (T, 1, H, W) -> (1, 1, T, H, W)
-        tensor = tensor.permute(1, 0, 2, 3).unsqueeze(0)  # (1, 1, T, H, W)
-        return tensor
-
-    def _generate_warped_noise(
-        self,
-        pass1_video_bytes: bytes,
-        latent_t: int,
-        latent_h: int,
-        latent_w: int,
-        latent_c: int,
-        device: str,
-        dtype: torch.dtype,
-    ) -> torch.Tensor:
-        """Generate warped noise from Pass 1 video using make_warped_noise.py subprocess.
-
-        Returns a warped noise tensor of shape (1, T, C, H, W).
-        """
-        import cv2
-        import numpy as np
-
-        submodule_root = self._get_submodule_root()
-        make_warped_noise_script = os.path.join(submodule_root, "inference", "cogvideox_fun", "make_warped_noise.py")
-
-        if not os.path.exists(make_warped_noise_script):
-            raise FileNotFoundError(f"make_warped_noise.py not found at: {make_warped_noise_script}")
-
-        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp_vid:
-            tmp_vid.write(pass1_video_bytes)
-            tmp_vid_path = tmp_vid.name
-
-        with tempfile.TemporaryDirectory() as noise_output_dir:
-            noise_subdir = os.path.join(noise_output_dir, "warped_noise")
-            os.makedirs(noise_subdir, exist_ok=True)
-            cmd = [
-                sys.executable,
-                make_warped_noise_script,
-                os.path.abspath(tmp_vid_path),
-                os.path.abspath(noise_subdir),
-            ]
-
-            logger.info("Running make_warped_noise.py (this may take several minutes)...")
-            try:
-                result = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    timeout=600,
-                )
-                if result.returncode != 0:
-                    raise RuntimeError(
-                        f"make_warped_noise.py failed (exit {result.returncode}):\n"
-                        f"stdout: {result.stdout}\nstderr: {result.stderr}"
-                    )
-            finally:
-                os.unlink(tmp_vid_path)
-
-            noise_file = os.path.join(noise_subdir, "noises.npy")
-            if not os.path.exists(noise_file):
-                raise FileNotFoundError(f"Warped noise file not created at: {noise_file}")
-
-            target_shape = (latent_t, latent_h, latent_w, latent_c)
-
-            warped_noise_np = np.load(noise_file)
-            logger.info(f"Loaded warped noise: shape={warped_noise_np.shape}, dtype={warped_noise_np.dtype}")
-
-            if warped_noise_np.dtype == np.float16:
-                warped_noise_np = warped_noise_np.astype(np.float32)
-
-            # Convert TCHW to THWC if needed
-            if warped_noise_np.ndim == 4 and warped_noise_np.shape[1] == 16:
-                warped_noise_np = warped_noise_np.transpose(0, 2, 3, 1)
-
-            # Resize to target shape
-            if warped_noise_np.shape != target_shape:
-                logger.info(f"Resizing noise from {warped_noise_np.shape} to {target_shape}")
-
-                if warped_noise_np.shape[0] != latent_t:
-                    indices = np.linspace(0, warped_noise_np.shape[0] - 1, latent_t).astype(int)
-                    warped_noise_np = warped_noise_np[indices]
-
-                resized_frames = []
-                for t in range(latent_t):
-                    frame = warped_noise_np[t]
-                    channels_resized = []
-                    for c in range(frame.shape[2]):
-                        channel = frame[:, :, c]
-                        channel_resized = cv2.resize(channel, (latent_w, latent_h), interpolation=cv2.INTER_LINEAR)
-                        channels_resized.append(channel_resized)
-                    frame_resized = np.stack(channels_resized, axis=2)
-                    resized_frames.append(frame_resized)
-
-                warped_noise_np = np.stack(resized_frames, axis=0)
-
-            # (T, H, W, C) -> (C, T, H, W) -> (1, C, T, H, W) matching diffusers latent convention
-            warped_noise_np = warped_noise_np.transpose(3, 0, 1, 2)
-            warped_noise = torch.from_numpy(warped_noise_np).float().unsqueeze(0)
-            warped_noise = warped_noise.to(device, dtype=dtype)
-
-            logger.info(f"Warped noise ready: shape={warped_noise.shape}")
-            return warped_noise
-
-    def _tensor_to_mp4_bytes(self, tensor: torch.Tensor, fps: int = 12) -> bytes:
-        """Encode a video tensor (1, C, T, H, W) or (T, H, W, C) in [0,1] to MP4 bytes."""
-        import io
-
-        import imageio
-        import numpy as np
-
-        if tensor.dim() == 5:
-            tensor = tensor[0].permute(1, 2, 3, 0)
-
-        video_np = tensor.clamp(0, 1).cpu().numpy()
-        video_np = (video_np * 255).astype(np.uint8)
-
-        buf = io.BytesIO()
-        writer = imageio.get_writer(buf, format="mp4", fps=fps, codec="libx264", quality=8, pixelformat="yuv420p")
-        for frame in video_np:
-            writer.append_data(frame)
-        writer.close()
-        buf.seek(0)
-        return buf.read()
+    def _get_venv_python(self) -> str:
+        library_root = self._get_library_root()
+        if sys.platform == "win32":
+            return os.path.join(library_root, ".venv", "Scripts", "python.exe")
+        return os.path.join(library_root, ".venv", "bin", "python")
 
     def process(self) -> AsyncResult[None]:
-        """Kick off async inference."""
         yield lambda: self._run_inference()
 
     def _run_inference(self) -> None:
-        """Run VOID Pass 2 inference in a background thread."""
+        from griptape_nodes.files.file import File
         from huggingface_hub import hf_hub_download, snapshot_download
+
+        self._seed_param.preprocess()
+        seed: int = self._seed_param.get_seed()
 
         base_model_id, _ = self._base_model_param.get_repo_revision()
         void_checkpoint_repo, _ = self._void_checkpoint_param.get_repo_revision()
 
-        cache_key = (base_model_id, void_checkpoint_repo)
+        logger.info(f"Downloading base model: {base_model_id}")
+        base_model_path = snapshot_download(base_model_id)
 
-        if cache_key not in VoidPass2Node._pipeline_cache:
-            logger.info(f"Downloading base model: {base_model_id}")
-            base_model_path = snapshot_download(base_model_id)
-
-            logger.info(f"Downloading VOID Pass 2 checkpoint from: {void_checkpoint_repo}")
-            void_checkpoint_path = hf_hub_download(void_checkpoint_repo, "void_pass2.safetensors")
-
-            self._load_pipeline(base_model_path, void_checkpoint_path, cache_key)
-
-        pipe = VoidPass2Node._pipeline_cache[cache_key]
-        vae = VoidPass2Node._vae_cache[cache_key]
+        logger.info(f"Downloading VOID Pass 2 checkpoint from: {void_checkpoint_repo}")
+        void_checkpoint_path = hf_hub_download(void_checkpoint_repo, "void_pass2.safetensors")
 
         prompt: str = self.parameter_values.get("prompt") or ""
-        negative_prompt: str = self.parameter_values.get("negative_prompt") or ""
         height: int = self.parameter_values.get("height") or 384
         width: int = self.parameter_values.get("width") or 672
-        # CogVideoX requires dimensions divisible by 8
         height = (height // 8) * 8
         width = (width // 8) * 8
         temporal_window_size: int = self.parameter_values.get("temporal_window_size") or 85
         num_inference_steps: int = self.parameter_values.get("num_inference_steps") or 50
         guidance_scale: float = self.parameter_values.get("guidance_scale") or 6.0
-        self._seed_param.preprocess()
-        seed: int = self._seed_param.get_seed()
 
         input_video_artifact = self.parameter_values.get("input_video")
         quadmask_artifact = self.parameter_values.get("quadmask_video")
@@ -553,63 +242,101 @@ class VoidPass2Node(SuccessFailureNode):
         if not isinstance(pass1_artifact, VideoUrlArtifact):
             raise ValueError("pass1_output_video is required")
 
-        input_video_bytes = self._video_artifact_to_bytes(input_video_artifact)
-        quadmask_bytes = self._video_artifact_to_bytes(quadmask_artifact)
-        pass1_video_bytes = self._video_artifact_to_bytes(pass1_artifact)
+        input_video_bytes = File(input_video_artifact.value).read_bytes()
+        quadmask_bytes = File(quadmask_artifact.value).read_bytes()
+        pass1_video_bytes = File(pass1_artifact.value).read_bytes()
 
-        # Align video length to VAE temporal compression
-        max_video_length = temporal_window_size
-        video_length = (
-            int((max_video_length - 1) // vae.config.temporal_compression_ratio * vae.config.temporal_compression_ratio)
-            + 1
-        )
-        logger.info(f"Aligned video length: {video_length}")
-
-        input_video_tensor = self._decode_video_to_tensor(input_video_bytes, height, width, video_length)
-        mask_tensor = self._build_mask_tensor(quadmask_bytes, height, width, video_length)
-
-        # Calculate latent dimensions for warped noise
-        latent_t = (temporal_window_size - 1) // 4 + 1
-        latent_h = height // 8
-        latent_w = width // 8
-        latent_c = 16
-
-        warped_noise = self._generate_warped_noise(
-            pass1_video_bytes,
-            latent_t=latent_t,
-            latent_h=latent_h,
-            latent_w=latent_w,
-            latent_c=latent_c,
-            device="cuda",
-            dtype=torch.bfloat16,
+        submodule_root = self._get_submodule_root()
+        script_path = os.path.join(
+            submodule_root, "inference", "cogvideox_fun", "inference_with_pass1_warped_noise.py"
         )
 
-        logger.info(
-            f"Running VOID Pass 2 inference: {height}x{width}, {temporal_window_size} frames, "
-            f"{num_inference_steps} steps"
-        )
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            seq_name = "job0"
+            data_root = os.path.join(tmp_dir, "void_data")
+            seq_dir = os.path.join(data_root, seq_name)
+            pass1_dir = os.path.join(tmp_dir, "pass1_outputs")
+            save_dir = os.path.join(tmp_dir, "void_outputs_pass2")
+            noise_cache_dir = os.path.join(tmp_dir, "noise_cache")
 
-        with torch.no_grad():
-            output = pipe(
-                prompt,
-                num_frames=temporal_window_size,
-                negative_prompt=negative_prompt,
-                height=height,
-                width=width,
-                generator=torch.Generator(device="cuda").manual_seed(seed),
-                guidance_scale=guidance_scale,
-                num_inference_steps=num_inference_steps,
-                video=input_video_tensor,
-                mask_video=mask_tensor,
-                strength=1.0,
-                use_trimask=False,
-                zero_out_mask_region=False,
-                use_vae_mask=True,
-                stack_mask=False,
-                latents=warped_noise,
-            ).videos
+            for d in [seq_dir, pass1_dir, save_dir, noise_cache_dir]:
+                os.makedirs(d, exist_ok=True)
 
-        mp4_bytes = self._tensor_to_mp4_bytes(output, fps=12)
+            with open(os.path.join(seq_dir, "input_video.mp4"), "wb") as f:
+                f.write(input_video_bytes)
+
+            with open(os.path.join(seq_dir, "quadmask_0.mp4"), "wb") as f:
+                f.write(quadmask_bytes)
+
+            with open(os.path.join(seq_dir, "prompt.json"), "w", encoding="utf-8") as f:
+                json.dump({"bg": prompt or "clean background"}, f)
+
+            # inference_with_pass1_warped_noise.py looks for {video_name}-fg=-1-*.mp4
+            pass1_video_path = os.path.join(pass1_dir, f"{seq_name}-fg=-1-auto.mp4")
+            with open(pass1_video_path, "wb") as f:
+                f.write(pass1_video_bytes)
+
+            cmd = [
+                self._get_venv_python(),
+                script_path,
+                "--video_name", seq_name,
+                "--data_rootdir", data_root,
+                "--pass1_dir", pass1_dir,
+                "--output_dir", save_dir,
+                "--model_name", base_model_path,
+                "--model_checkpoint", void_checkpoint_path,
+                "--height", str(height),
+                "--width", str(width),
+                "--temporal_window_size", str(temporal_window_size),
+                "--num_inference_steps", str(num_inference_steps),
+                "--guidance_scale", str(guidance_scale),
+                "--seed", str(seed),
+                "--warped_noise_cache_dir", noise_cache_dir,
+                "--use_quadmask",
+            ]
+
+            env = os.environ.copy()
+            existing_pythonpath = env.get("PYTHONPATH", "")
+            env["PYTHONPATH"] = (
+                submodule_root + os.pathsep + existing_pythonpath
+                if existing_pythonpath
+                else submodule_root
+            )
+
+            logger.info(f"Running VOID Pass 2: {height}x{width}, {temporal_window_size} frames")
+            logger.info(f"Command: {' '.join(cmd)}")
+
+            result = subprocess.run(
+                cmd,
+                cwd=submodule_root,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=7200,
+            )
+
+            if result.stdout:
+                logger.info(result.stdout[-10000:])
+            if result.stderr:
+                logger.warning(result.stderr[-10000:])
+
+            if result.returncode != 0:
+                tail = (result.stderr or result.stdout or "")[-3000:]
+                raise RuntimeError(f"VOID Pass 2 failed (exit {result.returncode}):\n{tail}")
+
+            output_candidates = [
+                p for p in glob.glob(os.path.join(save_dir, "**", "*.mp4"), recursive=True)
+                if not p.endswith("_tuple.mp4")
+            ]
+
+            if not output_candidates:
+                raise RuntimeError(f"VOID Pass 2 produced no output video in: {save_dir}")
+
+            output_candidates.sort(key=os.path.getmtime, reverse=True)
+            output_path = output_candidates[0]
+
+            with open(output_path, "rb") as f:
+                mp4_bytes = f.read()
 
         filename = f"void_pass2_{uuid.uuid4().hex[:8]}.mp4"
         url = GriptapeNodes.StaticFilesManager().save_static_file(mp4_bytes, filename)
