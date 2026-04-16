@@ -90,8 +90,12 @@ class VoidLibraryAdvanced(AdvancedNodeLibrary):
 
     # Packages to skip: training-only (problematic on Windows) + torch (handled by framework)
     SKIP_PACKAGES = {
-        "deepspeed", "came-pytorch", "tensorboard",  # Training-only
-        "torch", "torchvision", "torchaudio",  # Handled by pip_dependencies in JSON
+        "deepspeed",
+        "came-pytorch",
+        "tensorboard",  # Training-only
+        "torch",
+        "torchvision",
+        "torchaudio",  # Handled by pip_dependencies in JSON
     }
 
     def _install_from_requirements(self, submodule_path: Path) -> None:
@@ -124,6 +128,7 @@ class VoidLibraryAdvanced(AdvancedNodeLibrary):
 
         # Write filtered requirements to temp file and install
         import tempfile
+
         with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as tmp:
             tmp.write("\n".join(filtered_reqs))
             tmp_path = tmp.name

@@ -259,9 +259,7 @@ class VoidPass2Node(SuccessFailureNode):
         pass1_video_bytes = File(pass1_artifact.value).read_bytes()
 
         submodule_root = self._get_submodule_root()
-        script_path = os.path.join(
-            submodule_root, "inference", "cogvideox_fun", "inference_with_pass1_warped_noise.py"
-        )
+        script_path = os.path.join(submodule_root, "inference", "cogvideox_fun", "inference_with_pass1_warped_noise.py")
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             seq_name = "job0"
@@ -299,33 +297,45 @@ class VoidPass2Node(SuccessFailureNode):
             cmd = [
                 self._get_venv_python(),
                 script_path,
-                "--video_name", seq_name,
-                "--data_rootdir", data_root_cli,
-                "--pass1_dir", pass1_dir_cli,
-                "--output_dir", save_dir_cli,
-                "--model_name", base_model_cli,
-                "--model_checkpoint", checkpoint_cli,
-                "--height", str(height),
-                "--width", str(width),
-                "--temporal_window_size", str(temporal_window_size),
-                "--num_inference_steps", str(num_inference_steps),
-                "--guidance_scale", str(guidance_scale),
-                "--seed", str(seed),
-                "--warped_noise_cache_dir", noise_cache_cli,
+                "--video_name",
+                seq_name,
+                "--data_rootdir",
+                data_root_cli,
+                "--pass1_dir",
+                pass1_dir_cli,
+                "--output_dir",
+                save_dir_cli,
+                "--model_name",
+                base_model_cli,
+                "--model_checkpoint",
+                checkpoint_cli,
+                "--height",
+                str(height),
+                "--width",
+                str(width),
+                "--temporal_window_size",
+                str(temporal_window_size),
+                "--num_inference_steps",
+                str(num_inference_steps),
+                "--guidance_scale",
+                str(guidance_scale),
+                "--seed",
+                str(seed),
+                "--warped_noise_cache_dir",
+                noise_cache_cli,
                 "--use_quadmask",
             ]
 
             env = os.environ.copy()
             existing_pythonpath = env.get("PYTHONPATH", "")
             env["PYTHONPATH"] = (
-                submodule_root + os.pathsep + existing_pythonpath
-                if existing_pythonpath
-                else submodule_root
+                submodule_root + os.pathsep + existing_pythonpath if existing_pythonpath else submodule_root
             )
 
             # Add ffmpeg to PATH for mediapy (uses static_ffmpeg bundled binary)
             try:
                 import static_ffmpeg
+
                 ffmpeg_path, _ = static_ffmpeg.run.get_or_fetch_platform_executables_else_raise()
                 ffmpeg_dir = os.path.dirname(ffmpeg_path)
                 env["PATH"] = ffmpeg_dir + os.pathsep + env.get("PATH", "")
@@ -354,7 +364,8 @@ class VoidPass2Node(SuccessFailureNode):
                 raise RuntimeError(f"VOID Pass 2 failed (exit {result.returncode}):\n{tail}")
 
             output_candidates = [
-                p for p in glob.glob(os.path.join(save_dir, "**", "*.mp4"), recursive=True)
+                p
+                for p in glob.glob(os.path.join(save_dir, "**", "*.mp4"), recursive=True)
                 if not p.endswith("_tuple.mp4")
             ]
 

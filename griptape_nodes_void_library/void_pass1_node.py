@@ -278,7 +278,9 @@ class VoidPass1Node(SuccessFailureNode):
                 json.dump({"bg": prompt or "clean background"}, f)
 
             # Convert all paths to POSIX-style to avoid Windows parsing issues
-            config_cli = self._path_for_cli(os.path.join(submodule_root, "config", "quadmask_cogvideox.py"), submodule_root)
+            config_cli = self._path_for_cli(
+                os.path.join(submodule_root, "config", "quadmask_cogvideox.py"), submodule_root
+            )
             base_model_cli = self._path_for_cli(base_model_path, submodule_root)
             checkpoint_cli = self._path_for_cli(void_checkpoint_path, submodule_root)
             data_root_cli = self._path_for_cli(data_root, submodule_root)
@@ -287,7 +289,8 @@ class VoidPass1Node(SuccessFailureNode):
             cmd = [
                 self._get_venv_python(),
                 script_path,
-                "--config", config_cli,
+                "--config",
+                config_cli,
                 f"--config.video_model.model_name={base_model_cli}",
                 f"--config.video_model.transformer_path={checkpoint_cli}",
                 f"--config.data.data_rootdir={data_root_cli}",
@@ -304,14 +307,13 @@ class VoidPass1Node(SuccessFailureNode):
             env = os.environ.copy()
             existing_pythonpath = env.get("PYTHONPATH", "")
             env["PYTHONPATH"] = (
-                submodule_root + os.pathsep + existing_pythonpath
-                if existing_pythonpath
-                else submodule_root
+                submodule_root + os.pathsep + existing_pythonpath if existing_pythonpath else submodule_root
             )
 
             # Add ffmpeg to PATH for mediapy (uses static_ffmpeg bundled binary)
             try:
                 import static_ffmpeg
+
                 ffmpeg_path, _ = static_ffmpeg.run.get_or_fetch_platform_executables_else_raise()
                 ffmpeg_dir = os.path.dirname(ffmpeg_path)
                 env["PATH"] = ffmpeg_dir + os.pathsep + env.get("PATH", "")
@@ -339,10 +341,7 @@ class VoidPass1Node(SuccessFailureNode):
                 tail = (result.stderr or result.stdout or "")[-3000:]
                 raise RuntimeError(f"VOID Pass 1 failed (exit {result.returncode}):\n{tail}")
 
-            output_candidates = [
-                p for p in glob.glob(os.path.join(save_dir, "*.mp4"))
-                if not p.endswith("_tuple.mp4")
-            ]
+            output_candidates = [p for p in glob.glob(os.path.join(save_dir, "*.mp4")) if not p.endswith("_tuple.mp4")]
 
             if not output_candidates:
                 raise RuntimeError(f"VOID Pass 1 produced no output video in: {save_dir}")
