@@ -9,7 +9,15 @@
         "engine_version": "0.77.5",
         "tags": ["Griptape", "AI", "Video", "Inpainting", "ObjectRemoval"],
         "dependencies": {
-            "pip_dependencies": []
+            "pip_dependencies": [
+                "torch==2.7.1",
+                "torchvision==0.22.1",
+                "static_ffmpeg>=2.13.0"
+            ],
+            "pip_install_flags": [
+                "--preview",
+                "--torch-backend=auto"
+            ]
         },
         "resources": {
             "required": {
