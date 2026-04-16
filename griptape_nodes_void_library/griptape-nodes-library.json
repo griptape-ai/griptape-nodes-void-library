@@ -37,21 +37,12 @@
     ],
     "nodes": [
         {
-            "class_name": "VoidPass1Node",
-            "file_path": "void_pass1_node.py",
+            "class_name": "VoidNode",
+            "file_path": "void_node.py",
             "metadata": {
                 "category": "void_inpainting",
-                "description": "Removes a masked object from a video using VOID Pass 1 inference. Takes an input video, a quadmask video (encoding which regions to remove, overlap, affected, or keep), and a text prompt describing the background after removal. Outputs an inpainted video with the object and its physical interactions removed.",
-                "display_name": "VOID Pass 1 Inpainting"
-            }
-        },
-        {
-            "class_name": "VoidPass2Node",
-            "file_path": "void_pass2_node.py",
-            "metadata": {
-                "category": "void_inpainting",
-                "description": "Refines the temporal consistency of a VOID Pass 1 output using Pass 2 warped-noise refinement. Takes the original input video, the quadmask, the Pass 1 output video (used to generate warped optical-flow noise), and a text prompt. Outputs a temporally consistent refined inpainted video.",
-                "display_name": "VOID Pass 2 Refinement"
+                "description": "Removes a masked object from a video using Netflix's VOID model. Takes a binary mask of the object and an optional mask of physically-affected regions, builds the VOID quadmask internally, runs Pass 1 inpainting, and optionally runs Pass 2 warped-noise refinement for improved temporal consistency.",
+                "display_name": "VOID"
             }
         }
     ]
