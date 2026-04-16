@@ -237,8 +237,10 @@ class VoidPass2Node(SuccessFailureNode):
         prompt: str = self.parameter_values.get("prompt") or ""
         height: int = self.parameter_values.get("height") or 384
         width: int = self.parameter_values.get("width") or 672
-        height = (height // 8) * 8
-        width = (width // 8) * 8
+        # CogVideoX: VAE compresses 8x spatially, then transformer uses 2x2 spatial
+        # patches, so input h/w must be divisible by 16 (not 8) for an even latent dim.
+        height = (height // 16) * 16
+        width = (width // 16) * 16
         temporal_window_size: int = self.parameter_values.get("temporal_window_size") or 85
         num_inference_steps: int = self.parameter_values.get("num_inference_steps") or 50
         guidance_scale: float = self.parameter_values.get("guidance_scale") or 6.0
