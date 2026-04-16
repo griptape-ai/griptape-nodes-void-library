@@ -194,21 +194,21 @@ class VoidNode(SuccessFailureNode):
 
         self.add_parameter(
             Parameter(
-                name="height",
-                allowed_modes={ParameterMode.INPUT, ParameterMode.PROPERTY},
-                type="int",
-                default_value=384,
-                tooltip="Output video height in pixels. Snapped down to the nearest multiple of 16.",
-            )
-        )
-
-        self.add_parameter(
-            Parameter(
                 name="width",
                 allowed_modes={ParameterMode.INPUT, ParameterMode.PROPERTY},
                 type="int",
                 default_value=672,
                 tooltip="Output video width in pixels. Snapped down to the nearest multiple of 16.",
+            )
+        )
+
+        self.add_parameter(
+            Parameter(
+                name="height",
+                allowed_modes={ParameterMode.INPUT, ParameterMode.PROPERTY},
+                type="int",
+                default_value=384,
+                tooltip="Output video height in pixels. Snapped down to the nearest multiple of 16.",
             )
         )
 
