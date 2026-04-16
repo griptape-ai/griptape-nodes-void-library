@@ -203,7 +203,7 @@ class VoidPass1Node(SuccessFailureNode):
         return os.path.join(library_root, ".venv", "bin", "python")
 
     def _path_for_cli(self, path: str, repo_dir: str) -> str:
-        """Convert path to POSIX-style to avoid Windows drive-letter parsing issues.
+        r"""Convert path to POSIX-style to avoid Windows drive-letter parsing issues.
 
         ml_collections and other CLI tools can misparse Windows paths like C:\...
         as having a relative component "C". Using forward slashes and relative
