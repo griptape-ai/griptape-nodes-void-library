@@ -328,6 +328,72 @@ class VoidNode(SuccessFailureNode):
             return os.path.join(library_root, ".venv", "Scripts", "python.exe")
         return os.path.join(library_root, ".venv", "bin", "python")
 
+    def _probe_video_fps(self, video_path: str, default_fps: float = 24.0) -> float:
+        """Probe a video's frame rate using imageio inside the library .venv.
+
+        VOID's pass 1 reads every frame of the input and writes out at config.data.fps
+        (default 12). If the source is 24 fps and we leave the default, an 8s clip
+        becomes a 16s clip. We pass this fps back into both passes so frames-in
+        equals frames-out at the correct timebase.
+        """
+        script = (
+            "import sys, imageio.v2 as imageio\n"
+            "r = imageio.get_reader(sys.argv[1])\n"
+            "try:\n"
+            "    fps = float(r.get_meta_data().get('fps', 0.0) or 0.0)\n"
+            "finally:\n"
+            "    r.close()\n"
+            "print(fps)\n"
+        )
+        try:
+            result = subprocess.run(
+                [self._get_venv_python(), "-c", script, video_path],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                check=True,
+            )
+            fps = float(result.stdout.strip() or 0.0)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError) as e:
+            logger.warning(f"Failed to probe video fps, falling back to {default_fps}: {e}")
+            return default_fps
+        if fps <= 0.0:
+            logger.warning(f"Probed fps was {fps}, falling back to {default_fps}")
+            return default_fps
+        return fps
+
+    def _rewrite_video_fps_in_venv(self, input_path: str, output_path: str, fps: float) -> str:
+        """Re-encode a video at the target fps by reading every frame and rewriting.
+
+        VOID's pass 2 script hardcodes fps=12 when writing its output. Running this
+        helper reads all frames back (via imageio in the library .venv) and writes
+        them at the correct fps -- every original frame is preserved, only the
+        playback timebase changes. Returns the output path on success, or the
+        input path on any failure.
+        """
+        script = (
+            "import sys\n"
+            "import numpy as np\n"
+            "import imageio.v2 as imageio\n"
+            "input_path, output_path, fps = sys.argv[1], sys.argv[2], float(sys.argv[3])\n"
+            "reader = imageio.get_reader(input_path)\n"
+            "try:\n"
+            "    frames = [np.asarray(frame) for frame in reader]\n"
+            "finally:\n"
+            "    reader.close()\n"
+            "if not frames:\n"
+            "    raise SystemExit('input video has no frames')\n"
+            "imageio.mimsave(output_path, frames, fps=max(1.0, fps))\n"
+        )
+        cmd = [self._get_venv_python(), "-c", script, input_path, output_path, str(fps)]
+        try:
+            subprocess.run(cmd, capture_output=True, text=True, timeout=600, check=True)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+            stderr = getattr(e, "stderr", "") or ""
+            logger.warning(f"fps rewrite failed, using original: {stderr[-1000:] or e}")
+            return input_path
+        return output_path
+
     def _path_for_cli(self, path: str, repo_dir: str) -> str:
         r"""Convert path to POSIX-style to avoid Windows drive-letter parsing issues.
 
@@ -381,9 +447,7 @@ class VoidNode(SuccessFailureNode):
         submodule_root = self._get_submodule_root()
         env = os.environ.copy()
         existing_pythonpath = env.get("PYTHONPATH", "")
-        env["PYTHONPATH"] = (
-            submodule_root + os.pathsep + existing_pythonpath if existing_pythonpath else submodule_root
-        )
+        env["PYTHONPATH"] = submodule_root + os.pathsep + existing_pythonpath if existing_pythonpath else submodule_root
         try:
             import static_ffmpeg
 
@@ -452,7 +516,9 @@ class VoidNode(SuccessFailureNode):
 
         submodule_root = self._get_submodule_root()
         pass1_script = os.path.join(submodule_root, "inference", "cogvideox_fun", "predict_v2v.py")
-        pass2_script = os.path.join(submodule_root, "inference", "cogvideox_fun", "inference_with_pass1_warped_noise.py")
+        pass2_script = os.path.join(
+            submodule_root, "inference", "cogvideox_fun", "inference_with_pass1_warped_noise.py"
+        )
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             seq_name = "job0"
@@ -494,6 +560,12 @@ class VoidNode(SuccessFailureNode):
             data_root_cli = self._path_for_cli(data_root, submodule_root)
             save_dir_cli = self._path_for_cli(save_dir, submodule_root)
 
+            # Probe the input video's fps so both passes run at the source rate.
+            # VOID's pass 1 config defaults to fps=12; pass 2 hardcodes fps=12 when
+            # writing output. Without overriding, a 24 fps / 8s input becomes 16s.
+            source_fps = self._probe_video_fps(input_video_path, default_fps=24.0)
+            logger.info(f"Detected source fps: {source_fps}")
+
             pass1_cmd = [
                 self._get_venv_python(),
                 pass1_script,
@@ -505,6 +577,7 @@ class VoidNode(SuccessFailureNode):
                 f"--config.experiment.run_seqs={seq_name}",
                 f"--config.experiment.save_path={save_dir_cli}",
                 f"--config.data.sample_size={height}x{width}",
+                f"--config.data.fps={source_fps}",
                 f"--config.video_model.temporal_window_size={temporal_window_size}",
                 f"--config.video_model.num_inference_steps={pass1_num_inference_steps}",
                 f"--config.video_model.guidance_scale={pass1_guidance_scale}",
@@ -622,7 +695,15 @@ class VoidNode(SuccessFailureNode):
                 if not pass2_candidates:
                     raise RuntimeError(f"VOID Pass 2 produced no output video in: {save_dir_pass2}")
                 pass2_candidates.sort(key=os.path.getmtime, reverse=True)
-                final_output_path = pass2_candidates[0]
+                pass2_output_path = pass2_candidates[0]
+
+                # Pass 2 writes output at a hardcoded fps=12. Rewrite to the source
+                # fps so the output duration matches the input (all frames preserved).
+                final_output_path = self._rewrite_video_fps_in_venv(
+                    input_path=pass2_output_path,
+                    output_path=os.path.join(tmp_dir, "pass2_final.mp4"),
+                    fps=source_fps,
+                )
 
             with open(final_output_path, "rb") as f:
                 mp4_bytes = f.read()
