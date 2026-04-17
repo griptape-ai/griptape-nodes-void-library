@@ -577,7 +577,7 @@ class VoidNode(SuccessFailureNode):
                 f"--config.experiment.run_seqs={seq_name}",
                 f"--config.experiment.save_path={save_dir_cli}",
                 f"--config.data.sample_size={height}x{width}",
-                f"--config.data.fps={source_fps}",
+                f"--config.data.fps={int(round(source_fps))}",
                 f"--config.video_model.temporal_window_size={temporal_window_size}",
                 f"--config.video_model.num_inference_steps={pass1_num_inference_steps}",
                 f"--config.video_model.guidance_scale={pass1_guidance_scale}",
