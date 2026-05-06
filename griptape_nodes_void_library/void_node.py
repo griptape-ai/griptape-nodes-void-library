@@ -122,7 +122,11 @@ class VoidNode(SuccessFailureNode):
                 type="VideoUrlArtifact",
                 input_types=["VideoUrlArtifact"],
                 default_value=None,
-                tooltip="Source video from which the object will be removed.",
+                tooltip=(
+                    "Source video from which the object will be removed. "
+                    "Frame count must be of the form 4k+1 (e.g. 5, 9, ..., 193, 197) and "
+                    "at most 197 frames; pre-trim the video if needed."
+                ),
             )
         )
 
@@ -133,7 +137,10 @@ class VoidNode(SuccessFailureNode):
                 type="VideoUrlArtifact",
                 input_types=["VideoUrlArtifact"],
                 default_value=None,
-                tooltip="Binary mask video of the object to remove (white=remove, black=keep).",
+                tooltip=(
+                    "Binary mask video of the object to remove (white=remove, black=keep). "
+                    "Must have the same frame count as input_video."
+                ),
             )
         )
 
@@ -147,7 +154,8 @@ class VoidNode(SuccessFailureNode):
                 tooltip=(
                     "Optional binary mask video of regions physically affected by the removal "
                     "(e.g., shadows, reflections, or objects that interact with the removed object). "
-                    "When omitted, only the primary mask is used."
+                    "When omitted, only the primary mask is used. Must have the same frame count "
+                    "as input_video."
                 ),
             )
         )

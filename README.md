@@ -4,63 +4,62 @@ A [Griptape Nodes](https://www.griptapenodes.com/) library for physics-aware vid
 
 ## Overview
 
-This library wraps the VOID (Video Inpainting with Object-aware Diffusion) model from Netflix Research in two Griptape Nodes nodes. VOID removes objects from videos along with all physical interactions they induce on the scene -- not just secondary effects like shadows and reflections, but physics-level interactions such as objects falling when a supporting person is removed. Pass 1 generates a plausible inpainted video via diffusion; Pass 2 (optional) refines temporal consistency using optical-flow warped noise derived from the Pass 1 output.
+This library wraps the VOID (Video Inpainting with Object-aware Diffusion) model from Netflix Research. VOID removes objects from videos along with all physical interactions they induce on the scene -- not just secondary effects like shadows and reflections, but physics-level interactions such as objects falling when a supporting person is removed.
+
+The library exposes a single `VOID` node that takes a source video and one or two binary mask videos, generates the VOID quadmask internally, runs Pass 1 diffusion inpainting, and optionally runs Pass 2 warped-noise refinement for improved temporal consistency.
 
 ## Requirements
 
 - **GPU**: CUDA (NVIDIA) required
 - **Griptape Nodes Engine**: Version 0.77.5 or later
 
-## Nodes
+## Input constraints
 
-### VOID Pass 1 Inpainting
+- **Resolution**: `width` and `height` must be multiples of **16**. The node snaps non-conforming values down to the nearest multiple. (CogVideoX's VAE compresses spatially by 8x and the transformer applies 2x2 patches, so latent dimensions must be even.)
+- **Frame count**: VOID's VAE requires a frame count of the form **`4k + 1`** (1, 5, 9, ..., 193, 197) and caps total frames at **197**. You must pre-process your input video so it has a valid frame count before feeding it into this node. If the frame count is invalid you will see a `conv3d` kernel-size error from PyTorch; if the frame count exceeds 197 VOID will fail or silently truncate.
 
-Removes a masked object from a video using VOID Pass 1 inference. Takes an input video, a quadmask video encoding which regions to remove, overlap, be affected, or keep, and a text prompt describing the background after removal. Outputs an inpainted video with the object and its physical interactions removed.
+## Node: VOID
+
+Removes a masked object from a video, with optional refinement pass.
 
 **Parameters:**
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `base_model_id` | HuggingFace repo | Base CogVideoX-Fun model (e.g. `alibaba-pai/CogVideoX-Fun-V1.5-5b-InP`) |
-| `void_checkpoint_repo` | HuggingFace repo | VOID model checkpoint repo (e.g. `netflix/void-model`) |
-| `input_video` | VideoUrlArtifact | Source video from which the object will be removed |
-| `quadmask_video` | VideoUrlArtifact | Quadmask video encoding removal regions: 0=remove, 63=overlap, 127=affected, 255=keep |
+| `base_model_id` | HuggingFace repo | Base CogVideoX-Fun model (`alibaba-pai/CogVideoX-Fun-V1.5-5b-InP`) |
+| `void_checkpoint_repo` | HuggingFace repo | VOID checkpoint repo (`netflix/void-model`) |
+| `input_video` | VideoUrlArtifact | Source video. Must have a frame count of `4k + 1` (max 197). |
+| `primary_mask_video` | VideoUrlArtifact | Binary mask video of the object to remove (white=remove, black=keep). Must have the same frame count as `input_video`. |
+| `affected_mask_video` | VideoUrlArtifact (optional) | Optional binary mask of regions physically affected by the removal (e.g. shadows, reflections, cushions, water displacement). When omitted, only the primary mask is used. |
 | `prompt` | str | Text description of the scene background after the object is removed |
 | `negative_prompt` | str | Text prompt describing what to avoid in the output |
-| `height` | int | Output video height in pixels (default: 384) |
-| `width` | int | Output video width in pixels (default: 672) |
+| `primary_threshold` | int | Pixel intensity cutoff (0-255) for binarizing the primary mask (default: 20) |
+| `affected_threshold` | int | Pixel intensity cutoff (0-255) for binarizing the affected mask (default: 20) |
+| `width` | int | Output video width in pixels. Snapped down to a multiple of 16. (default: 672) |
+| `height` | int | Output video height in pixels. Snapped down to a multiple of 16. (default: 384) |
 | `temporal_window_size` | int | Number of frames to process per temporal window (default: 85) |
-| `num_inference_steps` | int | Number of diffusion denoising steps (default: 50) |
-| `guidance_scale` | float | Classifier-free guidance scale (default: 1.0) |
-| `seed` | int | Random seed for reproducible generation (default: 42) |
-| `output_video` | VideoUrlArtifact | Inpainted video with the masked object and its physical interactions removed |
+| `pass1_num_inference_steps` | int | Number of Pass 1 diffusion denoising steps (default: 30) |
+| `pass1_guidance_scale` | float | Pass 1 classifier-free guidance scale (default: 1.0) |
+| `enable_pass2_refinement` | bool | When enabled, runs VOID Pass 2 warped-noise refinement for improved temporal consistency. Significantly increases runtime. (default: false) |
+| `pass2_num_inference_steps` | int | Number of Pass 2 denoising steps. Only used when refinement is enabled. (default: 50) |
+| `pass2_guidance_scale` | float | Pass 2 classifier-free guidance scale. Only used when refinement is enabled. (default: 6.0) |
+| `seed` | int | Random seed for reproducible generation |
+| `output_video` | VideoUrlArtifact | Inpainted video. Frame count and fps match `input_video`. |
 
-### VOID Pass 2 Refinement
+## Quadmask semantics
 
-Refines the temporal consistency of a VOID Pass 1 output using Pass 2 warped-noise refinement. Takes the original input video, the quadmask, the Pass 1 output video (used to generate warped optical-flow noise), and a text prompt. Outputs a temporally consistent refined inpainted video.
+The node generates VOID's quadmask internally, so customers do not need to produce one themselves. The quadmask encodes four pixel-level intents:
 
-**Parameters:**
+| Value | Region | Meaning |
+|---|---|---|
+| `0` | primary only | remove and inpaint |
+| `63` | primary AND affected | overlap (remove, use affected context) |
+| `127` | affected only | regenerate as if the removed object were never there |
+| `255` | neither | keep untouched |
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `base_model_id` | HuggingFace repo | Base CogVideoX-Fun model (e.g. `alibaba-pai/CogVideoX-Fun-V1.5-5b-InP`) |
-| `void_checkpoint_repo` | HuggingFace repo | VOID model checkpoint repo (e.g. `netflix/void-model`) |
-| `input_video` | VideoUrlArtifact | Original source video (same as used in Pass 1) |
-| `quadmask_video` | VideoUrlArtifact | Quadmask video used in Pass 1 |
-| `pass1_output_video` | VideoUrlArtifact | Output video from VOID Pass 1, used to generate warped optical-flow noise |
-| `prompt` | str | Text description of the background after removal (same prompt as Pass 1) |
-| `negative_prompt` | str | Text prompt describing what to avoid in the output |
-| `height` | int | Output video height in pixels (default: 384) |
-| `width` | int | Output video width in pixels (default: 672) |
-| `temporal_window_size` | int | Number of frames to process per temporal window (default: 85) |
-| `num_inference_steps` | int | Number of diffusion denoising steps (default: 50) |
-| `guidance_scale` | float | Classifier-free guidance scale (default: 6.0) |
-| `seed` | int | Random seed for reproducible generation (default: 42) |
-| `output_video` | VideoUrlArtifact | Temporally refined inpainted video with improved consistency compared to Pass 1 |
+Without an `affected_mask_video`, only values `0` and `255` are used (plain inpainting without interaction modeling).
 
 ## Available Models
-
-The following models are available from HuggingFace:
 
 | Model | Description |
 |-------|-------------|
@@ -97,26 +96,20 @@ Models are downloaded automatically on first use and cached for subsequent runs.
    - Close the Settings Panel
    - Click on *Refresh Libraries*
 
-3. **Verify installation** by checking that the nodes appear in the node palette under the "VOID Inpainting" category.
+3. **Verify installation** by checking that the `VOID` node appears in the node palette under the "VOID Inpainting" category.
 
 ## Usage
 
-### VOID Pass 1 Inpainting
+1. Ensure your input video satisfies the [frame-count constraint](#input-constraints): `4k + 1` frames, max 197. Pre-process with `ffmpeg` or a trimming node if needed.
+2. Add a **VOID** node to your workflow.
+3. Connect your source video to `input_video`.
+4. Connect a binary mask video (white=remove, black=keep) to `primary_mask_video`. It must have the same frame count as the input video.
+5. *(Optional)* Connect a second binary mask to `affected_mask_video` covering regions that should change because the object is gone (shadows, reflections, objects that rested on the removed object). Same frame count as the input.
+6. Set `prompt` to describe the scene background after removal.
+7. *(Optional)* Enable `enable_pass2_refinement` for improved temporal consistency at the cost of additional runtime.
+8. Connect `output_video` to your next node or a display node.
 
-1. Add a **VOID Pass 1 Inpainting** node to your workflow
-2. Connect your source video to the `input_video` input
-3. Connect your quadmask video to the `quadmask_video` input -- the quadmask encodes per-pixel removal intent using four grayscale levels (0=remove, 63=overlap, 127=affected, 255=keep)
-4. Set the `prompt` to describe what the background should look like after the object is removed
-5. Connect the `output_video` to your next node or a display node
-
-### VOID Pass 2 Refinement
-
-1. Run **VOID Pass 1 Inpainting** first and keep the Pass 1 `output_video` wired up
-2. Add a **VOID Pass 2 Refinement** node to your workflow
-3. Connect the same `input_video` and `quadmask_video` used in Pass 1
-4. Connect the Pass 1 `output_video` to the `pass1_output_video` input
-5. Use the same `prompt` as Pass 1
-6. Connect the `output_video` to your next node or a display node
+The node builds the VOID quadmask from your masks internally and preserves the input's frame count and fps on the output.
 
 ## Troubleshooting
 
@@ -138,10 +131,17 @@ Models are downloaded automatically on first use and cached for subsequent runs.
 - Reduce `temporal_window_size` to process fewer frames per window
 - Close other GPU-intensive applications before running inference
 
-### make_warped_noise.py Errors (Pass 2)
+### conv3d Kernel Size Errors
 
-- Confirm the submodule is fully initialized and the `inference/cogvideox_fun/make_warped_noise.py` script exists inside `griptape_nodes_void_library/void-model/`
-- Ensure `cv2` (OpenCV) is available in the library's virtual environment
+A `RuntimeError: ... Kernel size can't be greater than actual input size` from `conv3d` means your input video's frame count is not of the form `4k + 1`. Re-encode the video so it has a valid frame count (1, 5, 9, ..., 193, 197) before feeding it into the node. For example, with `ffmpeg`:
+
+```bash
+ffmpeg -i input.mp4 -frames:v 193 -c:v libx264 trimmed.mp4
+```
+
+### Input Longer Than 197 Frames
+
+VOID's `max_video_length` is 197. Trim your input (and masks) to 197 frames or fewer before feeding them in. Longer inputs will either fail or be silently truncated by VOID.
 
 ## Additional Resources
 
