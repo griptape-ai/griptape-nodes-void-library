@@ -32,6 +32,8 @@ DEFAULT_NEGATIVE_PROMPT = (
     "The background is solid. Strange body and strange trajectory. Distortion."
 )
 
+LOG_TAIL_CHARS = 4000
+
 # Script executed inside the library .venv to build a VOID quadmask from a
 # binary primary mask and an optional affected mask. Matches the semantics
 # of _build_quadmask_video in the reference minimax-remover node.
@@ -441,14 +443,39 @@ class VoidNode(SuccessFailureNode):
             str(affected_threshold),
         ]
         logger.info("Building VOID quadmask (affected mask: %s)", bool(affected_mask_path))
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        self._run_and_surface(cmd, label="Quadmask generation", timeout=600)
+
+    def _run_and_surface(
+        self,
+        cmd: list[str],
+        *,
+        label: str,
+        timeout: float,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        log_tail_chars: int = LOG_TAIL_CHARS,
+    ) -> subprocess.CompletedProcess[str]:
+        """Run a subprocess, log stdout/stderr tails, and raise a RuntimeError
+        containing the output tail on non-zero exit. Returns the CompletedProcess
+        so callers can inspect the output further (e.g. detect silent failures
+        from scripts that swallow exceptions and exit 0).
+        """
+        result = subprocess.run(
+            cmd,
+            cwd=cwd,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
         if result.stdout:
-            logger.info(result.stdout[-4000:])
+            logger.info(result.stdout[-log_tail_chars:])
         if result.stderr:
-            logger.warning(result.stderr[-4000:])
+            logger.warning(result.stderr[-log_tail_chars:])
         if result.returncode != 0:
-            tail = (result.stderr or result.stdout or "")[-3000:]
-            raise RuntimeError(f"Quadmask generation failed (exit {result.returncode}):\n{tail}")
+            tail = (result.stderr or result.stdout or "")[-log_tail_chars:]
+            raise RuntimeError(f"{label} failed (exit {result.returncode}):\n{tail}")
+        return result
 
     def _ffmpeg_env(self) -> dict[str, str]:
         """Build a subprocess env with submodule on PYTHONPATH and ffmpeg on PATH."""
@@ -599,23 +626,13 @@ class VoidNode(SuccessFailureNode):
             logger.info(f"Running VOID Pass 1: {height}x{width}, {temporal_window_size} frames")
             logger.info(f"Command: {' '.join(pass1_cmd)}")
 
-            result = subprocess.run(
+            self._run_and_surface(
                 pass1_cmd,
+                label="VOID Pass 1",
+                timeout=3600,
                 cwd=submodule_root,
                 env=env,
-                capture_output=True,
-                text=True,
-                timeout=3600,
             )
-
-            if result.stdout:
-                logger.info(result.stdout[-10000:])
-            if result.stderr:
-                logger.warning(result.stderr[-10000:])
-
-            if result.returncode != 0:
-                tail = (result.stderr or result.stdout or "")[-3000:]
-                raise RuntimeError(f"VOID Pass 1 failed (exit {result.returncode}):\n{tail}")
 
             pass1_candidates = [p for p in glob.glob(os.path.join(save_dir, "*.mp4")) if not p.endswith("_tuple.mp4")]
             if not pass1_candidates:
@@ -677,23 +694,13 @@ class VoidNode(SuccessFailureNode):
                 logger.info(f"Running VOID Pass 2: {height}x{width}, {temporal_window_size} frames")
                 logger.info(f"Command: {' '.join(pass2_cmd)}")
 
-                result = subprocess.run(
+                result = self._run_and_surface(
                     pass2_cmd,
+                    label="VOID Pass 2",
+                    timeout=7200,
                     cwd=submodule_root,
                     env=env,
-                    capture_output=True,
-                    text=True,
-                    timeout=7200,
                 )
-
-                if result.stdout:
-                    logger.info(result.stdout[-10000:])
-                if result.stderr:
-                    logger.warning(result.stderr[-10000:])
-
-                if result.returncode != 0:
-                    tail = (result.stderr or result.stdout or "")[-3000:]
-                    raise RuntimeError(f"VOID Pass 2 failed (exit {result.returncode}):\n{tail}")
 
                 pass2_candidates = [
                     p
@@ -701,7 +708,16 @@ class VoidNode(SuccessFailureNode):
                     if not p.endswith("_tuple.mp4")
                 ]
                 if not pass2_candidates:
-                    raise RuntimeError(f"VOID Pass 2 produced no output video in: {save_dir_pass2}")
+                    # The upstream pass 2 script wraps each video in a try/except that
+                    # swallows the exception and always exits 0, so a missing output is
+                    # the only signal we get. Surface the captured subprocess output so
+                    # the real failure (e.g. make_warped_noise.py error, OOM, missing
+                    # pass 1 video) is visible in the error message, not just the logs.
+                    tail = (result.stderr or result.stdout or "")[-LOG_TAIL_CHARS:]
+                    raise RuntimeError(
+                        f"VOID Pass 2 produced no output video in: {save_dir_pass2}\n"
+                        f"Subprocess output (last {LOG_TAIL_CHARS} chars):\n{tail}"
+                    )
                 pass2_candidates.sort(key=os.path.getmtime, reverse=True)
                 pass2_output_path = pass2_candidates[0]
 
