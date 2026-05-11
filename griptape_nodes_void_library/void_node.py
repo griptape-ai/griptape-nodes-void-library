@@ -32,7 +32,7 @@ DEFAULT_NEGATIVE_PROMPT = (
     "The background is solid. Strange body and strange trajectory. Distortion."
 )
 
-LOG_TAIL_CHARS = 4000
+LOG_TAIL_CHARS = 10000
 
 # Script executed inside the library .venv to build a VOID quadmask from a
 # binary primary mask and an optional affected mask. Matches the semantics
