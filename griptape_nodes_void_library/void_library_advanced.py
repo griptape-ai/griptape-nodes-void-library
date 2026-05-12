@@ -231,3 +231,22 @@ class VoidLibraryAdvanced(AdvancedNodeLibrary):
         if modified:
             noise_warp_path.write_text(content, encoding="utf-8")
             logger.info("Patched noise_warp.py for Windows compatibility")
+
+        # Also patch make_warped_noise.py in the submodule
+        self._patch_make_warped_noise_for_windows()
+
+    def _patch_make_warped_noise_for_windows(self) -> None:
+        """Patch make_warped_noise.py in void-model submodule to fix video encoding on Windows."""
+        if sys.platform != "win32":
+            return
+        make_warped_noise_path = self._get_library_root() / "void-model" / "inference" / "cogvideox_fun" / "make_warped_noise.py"
+        if not make_warped_noise_path.exists():
+            return
+        content = make_warped_noise_path.read_text(encoding="utf-8")
+        # Patch video_bitrate='max' to add backend='imageio'
+        old_line = "rp.save_video_mp4(video, rp.path_join(output_folder, 'input.mp4'), framerate=12, video_bitrate='max')"
+        new_line = "rp.save_video_mp4(video, rp.path_join(output_folder, 'input.mp4'), framerate=12, video_bitrate='max', backend='imageio')  # patched for Windows"
+        if old_line in content and new_line not in content:
+            content = content.replace(old_line, new_line)
+            make_warped_noise_path.write_text(content, encoding="utf-8")
+            logger.info("Patched make_warped_noise.py for Windows compatibility")
