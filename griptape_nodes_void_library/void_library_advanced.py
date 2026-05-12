@@ -101,6 +101,7 @@ class VoidLibraryAdvanced(AdvancedNodeLibrary):
     EXTRA_PACKAGES = [
         "rp",  # Required by make_warped_noise.py for Pass 2 warped noise generation
         "fire",  # Used by make_warped_noise.py (pre-install to avoid rp's broken Windows auto-install)
+        "gitpython",  # Provides 'import git' - rp incorrectly tries pip_import('git') which doesn't exist
     ]
 
     def _install_from_requirements(self, submodule_path: Path) -> None:
