@@ -104,6 +104,7 @@ class VoidLibraryAdvanced(AdvancedNodeLibrary):
         "gitpython",  # Provides 'import git' - rp incorrectly tries pip_import('git') which doesn't exist
         "py3nvml",  # GPU detection used by rp (rp's pip_import fails on Windows)
         "psutil",  # System monitoring used by rp
+        "easydict",  # Used by rp's gather_vars (rp's pip_import fails on Windows)
     ]
 
     def _install_from_requirements(self, submodule_path: Path) -> None:
