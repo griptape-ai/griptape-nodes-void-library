@@ -177,6 +177,7 @@ class VoidLibraryAdvanced(AdvancedNodeLibrary):
         commonsource_path = rp_path / "git" / "CommonSource"
         if commonsource_path.exists() and any(commonsource_path.iterdir()):
             logger.info("CommonSource already installed")
+            self._patch_commonsource_for_windows(commonsource_path)
             return
         # Create parent directory and clone
         commonsource_path.parent.mkdir(parents=True, exist_ok=True)
@@ -184,4 +185,31 @@ class VoidLibraryAdvanced(AdvancedNodeLibrary):
         subprocess.check_call(
             ["git", "clone", "https://github.com/RyannDaGreat/CommonSource", str(commonsource_path)]
         )
+        self._patch_commonsource_for_windows(commonsource_path)
         logger.info("CommonSource installed successfully")
+
+    def _patch_commonsource_for_windows(self, commonsource_path: Path) -> None:
+        """Patch noise_warp.py to fix Windows GPU detection issues.
+
+        rp.select_torch_device() crashes on Windows because print_gpu_summary() tries
+        to query process usernames which fails with AccessDenied for system processes.
+        We patch it to use torch's native CUDA detection instead.
+        """
+        if sys.platform != "win32":
+            return
+        noise_warp_path = commonsource_path / "noise_warp.py"
+        if not noise_warp_path.exists():
+            return
+        content = noise_warp_path.read_text(encoding="utf-8")
+        # Handle both the original and any previous patch attempts
+        old_patterns = [
+            "device = rp.select_torch_device(prefer_used=True)",
+            "device = rp.select_torch_device(prefer_used=False)  # patched for Windows",
+        ]
+        new_line = "device = 'cuda' if torch.cuda.is_available() else 'cpu'  # patched for Windows"
+        for old_line in old_patterns:
+            if old_line in content:
+                content = content.replace(old_line, new_line)
+                noise_warp_path.write_text(content, encoding="utf-8")
+                logger.info("Patched noise_warp.py for Windows GPU detection")
+                return
