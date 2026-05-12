@@ -98,6 +98,16 @@ class VoidLibraryAdvanced(AdvancedNodeLibrary):
         "torchaudio",  # Handled by pip_dependencies in JSON
     }
 
+    EXTRA_PACKAGES = [
+        "rp",  # Required by make_warped_noise.py for Pass 2 warped noise generation
+        "fire",  # Used by make_warped_noise.py (pre-install to avoid rp's broken Windows auto-install)
+        "gitpython",  # Provides 'import git' - rp incorrectly tries pip_import('git') which doesn't exist
+        "py3nvml",  # GPU detection used by rp (rp's pip_import fails on Windows)
+        "psutil",  # System monitoring used by rp
+        "easydict",  # Used by rp's gather_vars (rp's pip_import fails on Windows)
+        "av",  # PyAV for video encoding/decoding (rp's pip_import fails on Windows)
+    ]
+
     def _install_from_requirements(self, submodule_path: Path) -> None:
         """Install dependencies from the submodule's requirements.txt.
 
@@ -126,6 +136,9 @@ class VoidLibraryAdvanced(AdvancedNodeLibrary):
                     continue
                 filtered_reqs.append(line)
 
+        # Add extra packages not in submodule requirements.txt
+        filtered_reqs.extend(self.EXTRA_PACKAGES)
+
         # Write filtered requirements to temp file and install
         import tempfile
 
@@ -144,3 +157,98 @@ class VoidLibraryAdvanced(AdvancedNodeLibrary):
         if str(submodule_path) not in sys.path:
             sys.path.insert(0, str(submodule_path))
         logger.info(f"Added {submodule_path} to sys.path")
+        self._install_commonsource()
+
+    def _install_commonsource(self) -> None:
+        """Clone CommonSource into rp's git directory for Pass 2 warped noise generation.
+
+        The rp package's git_import fails on Windows due to path issues, so we pre-clone
+        the repo to the location rp expects: <rp_package_dir>/git/CommonSource
+        """
+        venv_python = self._get_venv_python_path()
+        # Get rp's install location
+        result = subprocess.run(
+            [str(venv_python), "-c", "import rp; print(rp.__path__[0])"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            logger.warning("Could not find rp package location, skipping CommonSource install")
+            return
+        rp_path = Path(result.stdout.strip())
+        commonsource_path = rp_path / "git" / "CommonSource"
+        if commonsource_path.exists() and any(commonsource_path.iterdir()):
+            logger.info("CommonSource already installed")
+            self._patch_commonsource_for_windows(commonsource_path)
+            return
+        # Create parent directory and clone
+        commonsource_path.parent.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Cloning CommonSource to {commonsource_path}...")
+        subprocess.check_call(["git", "clone", "https://github.com/RyannDaGreat/CommonSource", str(commonsource_path)])
+        self._patch_commonsource_for_windows(commonsource_path)
+        logger.info("CommonSource installed successfully")
+
+    def _patch_commonsource_for_windows(self, commonsource_path: Path) -> None:
+        """Patch noise_warp.py to fix Windows-specific issues.
+
+        1. rp.select_torch_device() crashes on Windows because print_gpu_summary() tries
+           to query process usernames which fails with AccessDenied for system processes.
+           We patch it to use torch's native CUDA detection instead.
+
+        2. rp.save_video_mp4() with video_bitrate='max' overflows on Windows (32-bit C long).
+           We patch it to use the imageio backend instead.
+        """
+        if sys.platform != "win32":
+            return
+        noise_warp_path = commonsource_path / "noise_warp.py"
+        if not noise_warp_path.exists():
+            return
+        content = noise_warp_path.read_text(encoding="utf-8")
+        modified = False
+
+        # Patch 1: GPU detection
+        old_patterns = [
+            "device = rp.select_torch_device(prefer_used=True)",
+            "device = rp.select_torch_device(prefer_used=False)  # patched for Windows",
+        ]
+        new_line = "device = 'cuda' if torch.cuda.is_available() else 'cpu'  # patched for Windows"
+        for old_line in old_patterns:
+            if old_line in content:
+                content = content.replace(old_line, new_line)
+                modified = True
+                break
+
+        # Patch 2: Video encoding - use imageio backend to avoid bitrate overflow
+        # The original has 'video_bitrate="max",' with a trailing comma
+        old_bitrate = 'video_bitrate="max",'
+        new_bitrate = 'video_bitrate="max", backend="imageio",  # patched for Windows'
+        if old_bitrate in content and 'backend="imageio"' not in content:
+            content = content.replace(old_bitrate, new_bitrate)
+            modified = True
+
+        if modified:
+            noise_warp_path.write_text(content, encoding="utf-8")
+            logger.info("Patched noise_warp.py for Windows compatibility")
+
+        # Also patch make_warped_noise.py in the submodule
+        self._patch_make_warped_noise_for_windows()
+
+    def _patch_make_warped_noise_for_windows(self) -> None:
+        """Patch make_warped_noise.py in void-model submodule to fix video encoding on Windows."""
+        if sys.platform != "win32":
+            return
+        make_warped_noise_path = (
+            self._get_library_root() / "void-model" / "inference" / "cogvideox_fun" / "make_warped_noise.py"
+        )
+        if not make_warped_noise_path.exists():
+            return
+        content = make_warped_noise_path.read_text(encoding="utf-8")
+        # Patch video_bitrate='max' to add backend='imageio'
+        old_line = (
+            "rp.save_video_mp4(video, rp.path_join(output_folder, 'input.mp4'), framerate=12, video_bitrate='max')"
+        )
+        new_line = "rp.save_video_mp4(video, rp.path_join(output_folder, 'input.mp4'), framerate=12, video_bitrate='max', backend='imageio')  # patched for Windows"
+        if old_line in content and new_line not in content:
+            content = content.replace(old_line, new_line)
+            make_warped_noise_path.write_text(content, encoding="utf-8")
+            logger.info("Patched make_warped_noise.py for Windows compatibility")
