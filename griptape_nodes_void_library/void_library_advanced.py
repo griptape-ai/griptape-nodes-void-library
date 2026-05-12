@@ -184,9 +184,7 @@ class VoidLibraryAdvanced(AdvancedNodeLibrary):
         # Create parent directory and clone
         commonsource_path.parent.mkdir(parents=True, exist_ok=True)
         logger.info(f"Cloning CommonSource to {commonsource_path}...")
-        subprocess.check_call(
-            ["git", "clone", "https://github.com/RyannDaGreat/CommonSource", str(commonsource_path)]
-        )
+        subprocess.check_call(["git", "clone", "https://github.com/RyannDaGreat/CommonSource", str(commonsource_path)])
         self._patch_commonsource_for_windows(commonsource_path)
         logger.info("CommonSource installed successfully")
 
@@ -239,12 +237,16 @@ class VoidLibraryAdvanced(AdvancedNodeLibrary):
         """Patch make_warped_noise.py in void-model submodule to fix video encoding on Windows."""
         if sys.platform != "win32":
             return
-        make_warped_noise_path = self._get_library_root() / "void-model" / "inference" / "cogvideox_fun" / "make_warped_noise.py"
+        make_warped_noise_path = (
+            self._get_library_root() / "void-model" / "inference" / "cogvideox_fun" / "make_warped_noise.py"
+        )
         if not make_warped_noise_path.exists():
             return
         content = make_warped_noise_path.read_text(encoding="utf-8")
         # Patch video_bitrate='max' to add backend='imageio'
-        old_line = "rp.save_video_mp4(video, rp.path_join(output_folder, 'input.mp4'), framerate=12, video_bitrate='max')"
+        old_line = (
+            "rp.save_video_mp4(video, rp.path_join(output_folder, 'input.mp4'), framerate=12, video_bitrate='max')"
+        )
         new_line = "rp.save_video_mp4(video, rp.path_join(output_folder, 'input.mp4'), framerate=12, video_bitrate='max', backend='imageio')  # patched for Windows"
         if old_line in content and new_line not in content:
             content = content.replace(old_line, new_line)
