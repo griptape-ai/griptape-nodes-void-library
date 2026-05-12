@@ -191,11 +191,14 @@ class VoidLibraryAdvanced(AdvancedNodeLibrary):
         logger.info("CommonSource installed successfully")
 
     def _patch_commonsource_for_windows(self, commonsource_path: Path) -> None:
-        """Patch noise_warp.py to fix Windows GPU detection issues.
+        """Patch noise_warp.py to fix Windows-specific issues.
 
-        rp.select_torch_device() crashes on Windows because print_gpu_summary() tries
-        to query process usernames which fails with AccessDenied for system processes.
-        We patch it to use torch's native CUDA detection instead.
+        1. rp.select_torch_device() crashes on Windows because print_gpu_summary() tries
+           to query process usernames which fails with AccessDenied for system processes.
+           We patch it to use torch's native CUDA detection instead.
+
+        2. rp.save_video_mp4() with video_bitrate='max' overflows on Windows (32-bit C long).
+           We patch it to use the imageio backend instead.
         """
         if sys.platform != "win32":
             return
@@ -203,7 +206,9 @@ class VoidLibraryAdvanced(AdvancedNodeLibrary):
         if not noise_warp_path.exists():
             return
         content = noise_warp_path.read_text(encoding="utf-8")
-        # Handle both the original and any previous patch attempts
+        modified = False
+
+        # Patch 1: GPU detection
         old_patterns = [
             "device = rp.select_torch_device(prefer_used=True)",
             "device = rp.select_torch_device(prefer_used=False)  # patched for Windows",
@@ -212,6 +217,17 @@ class VoidLibraryAdvanced(AdvancedNodeLibrary):
         for old_line in old_patterns:
             if old_line in content:
                 content = content.replace(old_line, new_line)
-                noise_warp_path.write_text(content, encoding="utf-8")
-                logger.info("Patched noise_warp.py for Windows GPU detection")
-                return
+                modified = True
+                break
+
+        # Patch 2: Video encoding - use imageio backend to avoid bitrate overflow
+        # The original has 'video_bitrate="max",' with a trailing comma
+        old_bitrate = 'video_bitrate="max",'
+        new_bitrate = 'video_bitrate="max", backend="imageio",  # patched for Windows'
+        if old_bitrate in content and 'backend="imageio"' not in content:
+            content = content.replace(old_bitrate, new_bitrate)
+            modified = True
+
+        if modified:
+            noise_warp_path.write_text(content, encoding="utf-8")
+            logger.info("Patched noise_warp.py for Windows compatibility")
