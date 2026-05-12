@@ -153,3 +153,33 @@ class VoidLibraryAdvanced(AdvancedNodeLibrary):
         if str(submodule_path) not in sys.path:
             sys.path.insert(0, str(submodule_path))
         logger.info(f"Added {submodule_path} to sys.path")
+        self._install_commonsource()
+
+    def _install_commonsource(self) -> None:
+        """Clone CommonSource into rp's git directory for Pass 2 warped noise generation.
+
+        The rp package's git_import fails on Windows due to path issues, so we pre-clone
+        the repo to the location rp expects: <rp_package_dir>/git/CommonSource
+        """
+        venv_python = self._get_venv_python_path()
+        # Get rp's install location
+        result = subprocess.run(
+            [str(venv_python), "-c", "import rp; print(rp.__path__[0])"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            logger.warning("Could not find rp package location, skipping CommonSource install")
+            return
+        rp_path = Path(result.stdout.strip())
+        commonsource_path = rp_path / "git" / "CommonSource"
+        if commonsource_path.exists() and any(commonsource_path.iterdir()):
+            logger.info("CommonSource already installed")
+            return
+        # Create parent directory and clone
+        commonsource_path.parent.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Cloning CommonSource to {commonsource_path}...")
+        subprocess.check_call(
+            ["git", "clone", "https://github.com/RyannDaGreat/CommonSource", str(commonsource_path)]
+        )
+        logger.info("CommonSource installed successfully")
