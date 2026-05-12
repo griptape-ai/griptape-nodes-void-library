@@ -98,6 +98,11 @@ class VoidLibraryAdvanced(AdvancedNodeLibrary):
         "torchaudio",  # Handled by pip_dependencies in JSON
     }
 
+    EXTRA_PACKAGES = [
+        "rp",  # Required by make_warped_noise.py for Pass 2 warped noise generation
+        "fire",  # Used by make_warped_noise.py (pre-install to avoid rp's broken Windows auto-install)
+    ]
+
     def _install_from_requirements(self, submodule_path: Path) -> None:
         """Install dependencies from the submodule's requirements.txt.
 
@@ -125,6 +130,9 @@ class VoidLibraryAdvanced(AdvancedNodeLibrary):
                     logger.info(f"Skipping package (handled elsewhere or not needed): {pkg_name}")
                     continue
                 filtered_reqs.append(line)
+
+        # Add extra packages not in submodule requirements.txt
+        filtered_reqs.extend(self.EXTRA_PACKAGES)
 
         # Write filtered requirements to temp file and install
         import tempfile
