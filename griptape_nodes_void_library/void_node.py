@@ -2,6 +2,7 @@ import glob
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -33,6 +34,19 @@ DEFAULT_NEGATIVE_PROMPT = (
 )
 
 LOG_TAIL_CHARS = 10000
+
+# Windows-specific guidance surfaced when a subprocess fails with the OS-1455
+# paging-file-too-small error (typically while mmap'ing the safetensors weights
+# during CogVideoX transformer load). The pattern matches both the OSError text
+# from CPython ("[WinError 1455]" / "os error 1455") in either order.
+WINDOWS_PAGEFILE_ERROR_PATTERN = re.compile(r"\b(?:winerror|os\s+error)\s+1455\b", re.IGNORECASE)
+WINDOWS_PAGEFILE_GUIDANCE = (
+    "Windows paging file is too small to memory-map the model weights "
+    "(WinError 1455). Increase the system page file size to at least 2-3x "
+    "your installed RAM (Settings > System > About > Advanced system "
+    "settings > Performance > Settings > Advanced > Virtual memory) and "
+    "retry. Alternatively, set the page file to System managed size."
+)
 
 # VOID's CogVideoX VAE chunks video along the time axis and the inner conv3d
 # kernel is 3 frames deep, so the frame count must be of the form 4k+1 for the
@@ -515,6 +529,11 @@ class VoidNode(SuccessFailureNode):
             logger.warning(result.stderr[-log_tail_chars:])
         if result.returncode != 0:
             tail = (result.stderr or result.stdout or "")[-log_tail_chars:]
+            if WINDOWS_PAGEFILE_ERROR_PATTERN.search(tail):
+                raise RuntimeError(
+                    f"{label} failed (exit {result.returncode}): {WINDOWS_PAGEFILE_GUIDANCE}\n\n"
+                    f"Original error tail:\n{tail}"
+                )
             raise RuntimeError(f"{label} failed (exit {result.returncode}):\n{tail}")
         return result
 

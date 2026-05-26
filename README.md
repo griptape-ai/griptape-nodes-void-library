@@ -143,6 +143,19 @@ ffmpeg -i input.mp4 -frames:v 193 -c:v libx264 trimmed.mp4
 
 VOID's `max_video_length` is 197. Trim your input (and masks) to 197 frames or fewer before feeding them in. Longer inputs will either fail or be silently truncated by VOID.
 
+### Windows: "The paging file is too small for this operation to complete" (os error 1455)
+
+On Windows, loading the CogVideoX transformer memory-maps a multi-gigabyte safetensors file. If your system page file is undersized, the OS rejects the mapping with `OSError: ... (os error 1455)` (`WinError 1455`) and Pass 1 fails before any inference runs.
+
+The node detects this signature and re-raises with a guidance message, but the fix is at the OS level: increase the Windows page file size.
+
+1. Open **Settings > System > About > Advanced system settings**.
+2. Under *Performance*, click **Settings... > Advanced > Virtual memory > Change...**.
+3. Either select **System managed size** for the drive that holds the page file, or set a custom size of roughly **2-3x your installed RAM** (e.g. 64-96 GB initial/maximum on a 32 GB machine).
+4. Click *Set*, *OK*, and reboot.
+
+After rebooting, re-run the workflow. The same fix applies to Pass 2.
+
 ## Additional Resources
 
 - [VOID Model GitHub](https://github.com/Netflix/void-model)
