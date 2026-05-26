@@ -544,9 +544,9 @@ class VoidNode(SuccessFailureNode):
         existing_pythonpath = env.get("PYTHONPATH", "")
         env["PYTHONPATH"] = submodule_root + os.pathsep + existing_pythonpath if existing_pythonpath else submodule_root
         try:
-            import static_ffmpeg
+            from static_ffmpeg.run import get_or_fetch_platform_executables_else_raise
 
-            ffmpeg_path, _ = static_ffmpeg.run.get_or_fetch_platform_executables_else_raise()
+            ffmpeg_path, _ = get_or_fetch_platform_executables_else_raise()
             ffmpeg_dir = os.path.dirname(ffmpeg_path)
             env["PATH"] = ffmpeg_dir + os.pathsep + env.get("PATH", "")
         except (ImportError, FileNotFoundError, OSError) as e:
