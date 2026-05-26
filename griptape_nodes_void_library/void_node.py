@@ -2,6 +2,7 @@ import glob
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -33,6 +34,25 @@ DEFAULT_NEGATIVE_PROMPT = (
 )
 
 LOG_TAIL_CHARS = 10000
+
+# Windows-specific guidance surfaced when a subprocess fails with the OS-1455
+# paging-file-too-small error (typically while mmap'ing the safetensors weights
+# during CogVideoX transformer load). The pattern matches both the OSError text
+# from CPython ("[WinError 1455]" / "os error 1455") in either order.
+WINDOWS_PAGEFILE_ERROR_PATTERN = re.compile(r"\b(?:winerror|os\s+error)\s+1455\b", re.IGNORECASE)
+WINDOWS_PAGEFILE_GUIDANCE = (
+    "Windows paging file is too small to memory-map the model weights "
+    "(WinError 1455). Increase the system page file size to at least 2-3x "
+    "your installed RAM (Settings > System > About > Advanced system "
+    "settings > Performance > Settings > Advanced > Virtual memory) and "
+    "retry. Alternatively, set the page file to System managed size."
+)
+
+# VOID's CogVideoX VAE chunks video along the time axis and the inner conv3d
+# kernel is 3 frames deep, so the frame count must be of the form 4k+1 for the
+# final chunk to be valid. VOID also caps total frames at 197 via
+# config.data.max_video_length.
+VOID_MAX_FRAMES = 197
 
 # Script executed inside the library .venv to build a VOID quadmask from a
 # binary primary mask and an optional affected mask. Matches the semantics
@@ -372,8 +392,13 @@ class VoidNode(SuccessFailureNode):
             return default_fps
         return fps
 
-    def _rewrite_video_fps_in_venv(self, input_path: str, output_path: str, fps: float) -> str:
-        """Re-encode a video at the target fps by reading every frame and rewriting.
+    def _rewrite_video_fps_in_venv(
+        self,
+        input_path: str,
+        output_path: str,
+        fps: float,
+    ) -> str:
+        """Re-encode a video at the target fps without dropping any frames.
 
         VOID's pass 2 script hardcodes fps=12 when writing its output. Running this
         helper reads all frames back (via imageio in the library .venv) and writes
@@ -395,7 +420,14 @@ class VoidNode(SuccessFailureNode):
             "    raise SystemExit('input video has no frames')\n"
             "imageio.mimsave(output_path, frames, fps=max(1.0, fps))\n"
         )
-        cmd = [self._get_venv_python(), "-c", script, input_path, output_path, str(fps)]
+        cmd = [
+            self._get_venv_python(),
+            "-c",
+            script,
+            input_path,
+            output_path,
+            str(fps),
+        ]
         try:
             subprocess.run(cmd, capture_output=True, text=True, timeout=600, check=True)
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
@@ -403,6 +435,29 @@ class VoidNode(SuccessFailureNode):
             logger.warning(f"fps rewrite failed, using original: {stderr[-1000:] or e}")
             return input_path
         return output_path
+
+    def _count_video_frames(self, video_path: str) -> int:
+        """Count frames in a video using imageio inside the library .venv."""
+        script = (
+            "import sys, imageio.v2 as imageio\n"
+            "r = imageio.get_reader(sys.argv[1])\n"
+            "try:\n"
+            "    n = sum(1 for _ in r)\n"
+            "finally:\n"
+            "    r.close()\n"
+            "print(n)\n"
+        )
+        try:
+            result = subprocess.run(
+                [self._get_venv_python(), "-c", script, video_path],
+                capture_output=True,
+                text=True,
+                timeout=300,
+                check=True,
+            )
+            return int(result.stdout.strip() or 0)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError) as e:
+            raise RuntimeError(f"Failed to count frames in {video_path}: {e}") from e
 
     def _path_for_cli(self, path: str, repo_dir: str) -> str:
         r"""Convert path to POSIX-style to avoid Windows drive-letter parsing issues.
@@ -474,6 +529,11 @@ class VoidNode(SuccessFailureNode):
             logger.warning(result.stderr[-log_tail_chars:])
         if result.returncode != 0:
             tail = (result.stderr or result.stdout or "")[-log_tail_chars:]
+            if WINDOWS_PAGEFILE_ERROR_PATTERN.search(tail):
+                raise RuntimeError(
+                    f"{label} failed (exit {result.returncode}): {WINDOWS_PAGEFILE_GUIDANCE}\n\n"
+                    f"Original error tail:\n{tail}"
+                )
             raise RuntimeError(f"{label} failed (exit {result.returncode}):\n{tail}")
         return result
 
@@ -484,9 +544,9 @@ class VoidNode(SuccessFailureNode):
         existing_pythonpath = env.get("PYTHONPATH", "")
         env["PYTHONPATH"] = submodule_root + os.pathsep + existing_pythonpath if existing_pythonpath else submodule_root
         try:
-            import static_ffmpeg
+            from static_ffmpeg.run import get_or_fetch_platform_executables_else_raise
 
-            ffmpeg_path, _ = static_ffmpeg.run.get_or_fetch_platform_executables_else_raise()
+            ffmpeg_path, _ = get_or_fetch_platform_executables_else_raise()
             ffmpeg_dir = os.path.dirname(ffmpeg_path)
             env["PATH"] = ffmpeg_dir + os.pathsep + env.get("PATH", "")
         except (ImportError, FileNotFoundError, OSError) as e:
@@ -578,6 +638,30 @@ class VoidNode(SuccessFailureNode):
             with open(os.path.join(seq_dir, "prompt.json"), "w", encoding="utf-8") as f:
                 json.dump({"bg": prompt or "clean background"}, f)
 
+            # Probe the input video's fps so both passes run at the source rate.
+            # VOID's pass 1 config defaults to fps=12; pass 2 hardcodes fps=12 when
+            # writing output. Without overriding, a 24 fps / 8s input becomes 16s.
+            source_fps = self._probe_video_fps(input_video_path, default_fps=24.0)
+            logger.info(f"Detected source fps: {source_fps}")
+
+            # VOID's VAE requires a 4k+1 frame count (its conv3d kernel is 3 frames
+            # deep with time-axis chunking) and max_video_length=197. We don't pad
+            # or trim for the user; we surface a clear error so they can pre-process
+            # rather than have us silently reshape their footage.
+            original_frame_count = self._count_video_frames(input_video_path)
+            if original_frame_count > VOID_MAX_FRAMES:
+                raise ValueError(
+                    f"input_video has {original_frame_count} frames; VOID caps total frames at "
+                    f"{VOID_MAX_FRAMES}. Trim the input (and masks) to {VOID_MAX_FRAMES} or fewer "
+                    f"frames of the form 4k+1 before running this node."
+                )
+            if original_frame_count < 1 or (original_frame_count - 1) % 4 != 0:
+                raise ValueError(
+                    f"input_video has {original_frame_count} frames; VOID's VAE requires a frame "
+                    f"count of the form 4k+1 (1, 5, 9, ..., 193, 197). Re-encode the input (and "
+                    f"masks) to a valid frame count before running this node."
+                )
+
             self._build_quadmask_in_venv(
                 primary_mask_path=primary_mask_path,
                 affected_mask_path=affected_mask_path,
@@ -594,12 +678,6 @@ class VoidNode(SuccessFailureNode):
             pass1_checkpoint_cli = self._path_for_cli(void_pass1_checkpoint_path, submodule_root)
             data_root_cli = self._path_for_cli(data_root, submodule_root)
             save_dir_cli = self._path_for_cli(save_dir, submodule_root)
-
-            # Probe the input video's fps so both passes run at the source rate.
-            # VOID's pass 1 config defaults to fps=12; pass 2 hardcodes fps=12 when
-            # writing output. Without overriding, a 24 fps / 8s input becomes 16s.
-            source_fps = self._probe_video_fps(input_video_path, default_fps=24.0)
-            logger.info(f"Detected source fps: {source_fps}")
 
             pass1_cmd = [
                 self._get_venv_python(),

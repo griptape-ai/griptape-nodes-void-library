@@ -1,11 +1,16 @@
 [project]
 name = "griptape-nodes-void-library"
-version = "0.1.0"
+version = "0.2.1"
 description = "Griptape Nodes VOID Library for video inpainting and object removal"
 authors = [{ name = "Griptape, Inc.", email = "hello@griptape.ai" }]
 readme = "README.md"
 requires-python = "~=3.12.0"
-dependencies = ["griptape-nodes"]
+dependencies = [
+    "griptape-nodes",
+    "torch==2.7.1",
+    "torchvision==0.22.1",
+    "static_ffmpeg>=2.13.0",
+]
 
 [tool.uv.sources]
 griptape-nodes = { git = "https://github.com/griptape-ai/griptape-nodes", rev = "latest" }
