@@ -1,60 +1,60 @@
 {
-    "name": "Griptape Nodes VOID Library",
-    "library_schema_version": "0.5.0",
-    "advanced_library_path": "void_library_advanced.py",
-    "metadata": {
-        "author": "Griptape, Inc.",
-        "description": "VOID is a two-pass video inpainting model that removes objects from videos along with all interactions they induce on the scene -- not just secondary effects like shadows and reflections, but physical interactions such as objects falling when a supporting person is removed. Pass 1 generates a plausible inpainted video, and Pass 2 (optional) refines temporal consistency using warped-noise from the Pass 1 output.",
-        "library_version": "0.2.1",
-        "engine_version": "0.77.5",
-        "tags": [
-            "Griptape",
-            "AI",
-            "Video",
-            "Inpainting",
-            "ObjectRemoval"
-        ],
-        "dependencies": {
-            "pip_dependencies": [
-                "torch==2.7.1",
-                "torchvision==0.22.1",
-                "static_ffmpeg>=2.13.0"
-            ],
-            "pip_install_flags": [
-                "--preview",
-                "--torch-backend=auto"
-            ]
-        },
-        "resources": {
-            "required": {
-                "compute": [
-                    [
-                        "cuda"
-                    ],
-                    "has_any"
-                ]
-            }
-        }
-    },
-    "categories": [
-        {
-            "void_inpainting": {
-                "color": "border-green-500",
-                "title": "VOID Inpainting",
-                "description": "Physics-aware video object removal with interaction simulation",
-                "icon": "video"
-            }
-        }
+  "name": "Griptape Nodes VOID Library",
+  "library_schema_version": "0.5.0",
+  "advanced_library_path": "void_library_advanced.py",
+  "metadata": {
+    "author": "Griptape, Inc.",
+    "description": "VOID is a two-pass video inpainting model that removes objects from videos along with all interactions they induce on the scene -- not just secondary effects like shadows and reflections, but physical interactions such as objects falling when a supporting person is removed. Pass 1 generates a plausible inpainted video, and Pass 2 (optional) refines temporal consistency using warped-noise from the Pass 1 output.",
+    "library_version": "make[1]: Entering directory '/home/runner/work/griptape-nodes-void-library/griptape-nodes-void-library'.1.0",
+    "engine_version": "0.77.5",
+    "tags": [
+      "Griptape",
+      "AI",
+      "Video",
+      "Inpainting",
+      "ObjectRemoval"
     ],
-    "nodes": [
-        {
-            "class_name": "VoidNode",
-            "file_path": "void_node.py",
-            "metadata": {
-                "category": "void_inpainting",
-                "description": "Removes a masked object from a video using Netflix's VOID model. Takes a binary mask of the object and an optional mask of physically-affected regions, builds the VOID quadmask internally, runs Pass 1 inpainting, and optionally runs Pass 2 warped-noise refinement for improved temporal consistency.",
-                "display_name": "VOID"
-            }
-        }
-    ]
+    "dependencies": {
+      "pip_dependencies": [
+        "torch==2.7.1",
+        "torchvision==0.22.1",
+        "static_ffmpeg>=2.13.0"
+      ],
+      "pip_install_flags": [
+        "--preview",
+        "--torch-backend=auto"
+      ]
+    },
+    "resources": {
+      "required": {
+        "compute": [
+          [
+            "cuda"
+          ],
+          "has_any"
+        ]
+      }
+    }
+  },
+  "categories": [
+    {
+      "void_inpainting": {
+        "color": "border-green-500",
+        "title": "VOID Inpainting",
+        "description": "Physics-aware video object removal with interaction simulation",
+        "icon": "video"
+      }
+    }
+  ],
+  "nodes": [
+    {
+      "class_name": "VoidNode",
+      "file_path": "void_node.py",
+      "metadata": {
+        "category": "void_inpainting",
+        "description": "Removes a masked object from a video using Netflix's VOID model. Takes a binary mask of the object and an optional mask of physically-affected regions, builds the VOID quadmask internally, runs Pass 1 inpainting, and optionally runs Pass 2 warped-noise refinement for improved temporal consistency.",
+        "display_name": "VOID"
+      }
+    }
+  ]
 }
