@@ -1,5 +1,11 @@
 SHELL := /bin/bash
 
+# Recipes capture the output of recursive `make version/get` calls into shell
+# variables and git tag names. Without this, GNU make prints "Entering/Leaving
+# directory" lines to stdout for sub-makes, which get captured as part of the
+# version string and corrupt the library JSON and git tags.
+MAKEFLAGS += --no-print-directory
+
 LIBRARY_JSON := griptape_nodes_void_library/griptape-nodes-library.json
 
 .PHONY: version/get
