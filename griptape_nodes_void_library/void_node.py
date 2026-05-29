@@ -553,6 +553,89 @@ class VoidNode(SuccessFailureNode):
             logger.warning(f"static_ffmpeg not available, ffmpeg may not be found: {e}")
         return env
 
+    def _sanitize_input_video(self, video_path: str, label: str = "video") -> str:
+        """Strip embedded thumbnail streams and normalize pixel format to yuv420p.
+
+        AI video generators (Grok, Sora, etc.) frequently embed cover art as a
+        secondary video track and may produce 10-bit or other non-yuv420p output.
+        Both imageio and VOID's scripts fail opaquely when they encounter these.
+
+        Returns a new sanitized file path if changes were needed, or the original
+        path if the video is already clean or ffprobe is unavailable.
+        """
+        try:
+            from static_ffmpeg.run import get_or_fetch_platform_executables_else_raise
+
+            ffmpeg_path, ffprobe_path = get_or_fetch_platform_executables_else_raise()
+        except (ImportError, FileNotFoundError, OSError) as e:
+            logger.warning("static_ffmpeg unavailable, skipping %s sanitization: %s", label, e)
+            return video_path
+
+        try:
+            probe = subprocess.run(
+                [ffprobe_path, "-v", "quiet", "-print_format", "json", "-show_streams", video_path],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                check=True,
+            )
+            streams = json.loads(probe.stdout).get("streams", [])
+        except Exception as e:
+            logger.warning("Failed to probe %s streams, skipping sanitization: %s", label, e)
+            return video_path
+
+        video_streams = [s for s in streams if s.get("codec_type") == "video"]
+        if not video_streams:
+            return video_path
+
+        primary = video_streams[0]
+        extra_count = len(video_streams) - 1
+        pix_fmt = primary.get("pix_fmt", "yuv420p")
+        needs_pix_fmt = pix_fmt != "yuv420p"
+
+        if extra_count == 0 and not needs_pix_fmt:
+            return video_path
+
+        if extra_count > 0:
+            logger.warning(
+                "%s: found %d embedded thumbnail stream(s) (cover art); stripping to primary "
+                "video only. AI video generators (Grok, Sora, etc.) commonly embed these and "
+                "they cause imageio to fail.",
+                label,
+                extra_count,
+            )
+        if needs_pix_fmt:
+            logger.warning(
+                "%s: primary stream pixel format is '%s' (not yuv420p); re-encoding to yuv420p "
+                "for imageio and VOID compatibility.",
+                label,
+                pix_fmt,
+            )
+
+        base, ext = os.path.splitext(video_path)
+        out_path = base + "_clean" + ext
+
+        cmd = [ffmpeg_path, "-y", "-i", video_path, "-map", "0:v:0", "-map", "0:a?"]
+        if needs_pix_fmt:
+            cmd += ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "copy"]
+        else:
+            # Thumbnail-only: lossless remux, no re-encode
+            cmd += ["-c", "copy"]
+        cmd.append(out_path)
+
+        try:
+            subprocess.run(cmd, capture_output=True, text=True, timeout=300, check=True)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+            stderr = getattr(e, "stderr", "") or ""
+            logger.warning(
+                "Failed to sanitize %s, proceeding with original: %s",
+                label,
+                stderr[-500:] or e,
+            )
+            return video_path
+
+        return out_path
+
     def process(self) -> AsyncResult[None]:
         yield lambda: self._run_inference()
 
@@ -637,6 +720,15 @@ class VoidNode(SuccessFailureNode):
                     f.write(affected_mask_bytes)
             with open(os.path.join(seq_dir, "prompt.json"), "w", encoding="utf-8") as f:
                 json.dump({"bg": prompt or "clean background"}, f)
+
+            # Strip embedded thumbnails and normalize pixel format before any imageio
+            # or VOID access. Both will fail opaquely on cover-art streams or 10-bit video.
+            sanitized_input = self._sanitize_input_video(input_video_path, label="input_video")
+            if sanitized_input != input_video_path:
+                os.replace(sanitized_input, input_video_path)
+            primary_mask_path = self._sanitize_input_video(primary_mask_path, label="primary_mask_video")
+            if affected_mask_path:
+                affected_mask_path = self._sanitize_input_video(affected_mask_path, label="affected_mask_video")
 
             # Probe the input video's fps so both passes run at the source rate.
             # VOID's pass 1 config defaults to fps=12; pass 2 hardcodes fps=12 when
