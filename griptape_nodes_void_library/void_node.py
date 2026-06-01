@@ -7,7 +7,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import uuid
 from pathlib import Path
 from typing import Any
 
@@ -15,8 +14,8 @@ from griptape.artifacts.video_url_artifact import VideoUrlArtifact
 from griptape_nodes.exe_types.core_types import Parameter, ParameterMode
 from griptape_nodes.exe_types.node_types import AsyncResult, SuccessFailureNode
 from griptape_nodes.exe_types.param_components.huggingface.huggingface_repo_parameter import HuggingFaceRepoParameter
+from griptape_nodes.exe_types.param_components.project_file_parameter import ProjectFileParameter
 from griptape_nodes.exe_types.param_components.seed_parameter import SeedParameter
-from griptape_nodes.retained_mode.griptape_nodes import GriptapeNodes
 
 logger = logging.getLogger("void_library")
 
@@ -316,6 +315,13 @@ class VoidNode(SuccessFailureNode):
                 tooltip="Inpainted video with the masked object and its physical interactions removed.",
             )
         )
+
+        self._output_file = ProjectFileParameter(
+            node=self,
+            name="output_file",
+            default_filename="void_output.mp4",
+        )
+        self._output_file.add_parameter()
 
         self._create_status_parameters()
 
@@ -902,7 +908,7 @@ class VoidNode(SuccessFailureNode):
             with open(final_output_path, "rb") as f:
                 mp4_bytes = f.read()
 
-        filename = f"void_{uuid.uuid4().hex[:8]}.mp4"
-        url = GriptapeNodes.StaticFilesManager().save_static_file(mp4_bytes, filename)
-        self.parameter_output_values["output_video"] = VideoUrlArtifact(url)
+        dest = self._output_file.build_file()
+        saved = dest.write_bytes(mp4_bytes)
+        self.parameter_output_values["output_video"] = VideoUrlArtifact(saved.location)
         logger.info("VOID inference complete (pass2=%s)", enable_pass2)
