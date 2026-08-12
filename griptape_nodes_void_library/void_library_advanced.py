@@ -4,7 +4,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pygit2
 from griptape_nodes.node_library.advanced_node_library import AdvancedNodeLibrary
 from griptape_nodes.node_library.library_registry import Library, LibrarySchema
 
@@ -32,21 +31,16 @@ class VoidLibraryAdvanced(AdvancedNodeLibrary):
             return root / ".venv" / "Scripts" / "python.exe"
         return root / ".venv" / "bin" / "python"
 
-    def _update_submodules_recursive(self, repo_path: Path) -> None:
-        repo = pygit2.Repository(str(repo_path))
-        repo.submodules.update(init=True)
-        for sub in repo.submodules:
-            sub_path = repo_path / sub.path
-            if sub_path.exists() and (sub_path / ".git").exists():
-                self._update_submodules_recursive(sub_path)
-
     def _init_submodule(self) -> Path:
         library_root = self._get_library_root()
         submodule_dir = library_root / "void-model"
         if submodule_dir.exists() and any(submodule_dir.iterdir()):
             logger.info("Submodule already initialized")
             return submodule_dir
-        self._update_submodules_recursive(library_root.parent)
+        # The git CLI rather than pygit2: the engine dropped pygit2 (its bundled TLS trust
+        # store breaks on some platforms) and requires git on PATH, so it is the one tool
+        # guaranteed to be here.
+        subprocess.check_call(["git", "-C", str(library_root.parent), "submodule", "update", "--init", "--recursive"])
         if not submodule_dir.exists() or not any(submodule_dir.iterdir()):
             raise RuntimeError(f"Submodule init failed: {submodule_dir}")
         logger.info("Submodule initialized successfully")
@@ -61,8 +55,7 @@ class VoidLibraryAdvanced(AdvancedNodeLibrary):
 
     def _get_submodule_commit(self, submodule_path: Path) -> str:
         """Return the HEAD commit SHA of the submodule (the version pinned by the library author)."""
-        repo = pygit2.Repository(str(submodule_path))
-        return str(repo.head.target)
+        return subprocess.check_output(["git", "-C", str(submodule_path), "rev-parse", "HEAD"], text=True).strip()
 
     def _get_installed_sentinel(self) -> Path:
         return self._get_library_root() / ".installed_commit"
