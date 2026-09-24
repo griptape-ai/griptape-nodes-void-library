@@ -5,6 +5,7 @@ from pathlib import Path
 
 from griptape_nodes.node_library.advanced_node_library import AdvancedNodeLibrary
 from griptape_nodes.node_library.library_registry import Library, LibrarySchema
+from griptape_nodes.retained_mode.griptape_nodes import GriptapeNodes
 
 logger = logging.getLogger("void_library")
 
@@ -12,6 +13,10 @@ logger = logging.getLogger("void_library")
 class VoidLibraryAdvanced(AdvancedNodeLibrary):
     def before_library_nodes_loaded(self, library_data: LibrarySchema, library: Library) -> None:
         logger.info(f"Loading '{library_data.name}' library...")
+        # The work below populates the execution environment, which only the worker
+        # imports, so the orchestrator must not run it.
+        if not GriptapeNodes.LibraryManager().is_worker:
+            return
         self._init_submodule()
         self._install_commonsource()
 
