@@ -6,7 +6,7 @@
         "author": "Griptape, Inc.",
         "description": "VOID is a two-pass video inpainting model that removes objects from videos along with all interactions they induce on the scene -- not just secondary effects like shadows and reflections, but physical interactions such as objects falling when a supporting person is removed. Pass 1 generates a plausible inpainted video, and Pass 2 (optional) refines temporal consistency using warped-noise from the Pass 1 output.",
         "library_version": "0.4.0",
-        "engine_version": "0.77.5",
+        "engine_version": "0.102.0",
         "tags": [
             "Griptape",
             "AI",
@@ -24,7 +24,7 @@
                 "diffusers==0.33.1",
                 "accelerate==1.12.0",
                 "transformers==4.57.1",
-                "huggingface_hub",
+                "huggingface_hub<2",
                 "safetensors==0.6.2",
                 "peft==0.17.1",
                 "opencv-python==4.10.0.84",
