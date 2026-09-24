@@ -53,6 +53,8 @@ make deps/sync
 
 This is also run automatically as part of `make install/core` and `make install/all`.
 
+The library JSON's `pip_dependencies_exec` field is separate and **hand-maintained**: it lists what only `process()` needs, which for this library is the whole VOID inference stack. The engine installs it into `.venv-exec` beside the manifest, and the subprocesses this library launches use that interpreter. It has no `pyproject.toml` counterpart on purpose, because `uv` resolves every extra into one universal lock, so declaring the inference stack as an extra would drag its pins into the edit-time resolution. `make deps/sync` leaves the field untouched.
+
 ## CI
 
 The CI workflow runs `make check` on every pull request and push to `main`. PRs must pass all checks before merging.

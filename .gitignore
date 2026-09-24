@@ -1,5 +1,6 @@
 .env
 .venv
+.venv-exec
 .scratch/
 __pycache__/
 *.py[cod]
