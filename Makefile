@@ -58,6 +58,8 @@ version/publish: ## Create and push git tags.
 
 .PHONY: deps/sync
 deps/sync: ## Sync pip_dependencies in the library JSON from pyproject.toml.
+	@# Only pip_dependencies. pip_dependencies_exec is maintained in the library JSON by hand,
+	@# has no pyproject counterpart to sync from, and must survive this target untouched.
 	@uv run python -c "\
 import tomllib, json; \
 pyproject = tomllib.load(open('pyproject.toml', 'rb')); \
@@ -77,7 +79,9 @@ install/core: deps/sync ## Install core dependencies.
 
 .PHONY: install/all
 install/all: deps/sync ## Install all dependencies.
-	@uv sync --all-groups --all-extras
+	@# No --all-extras: an extra added later would install into the edit-time venv, which the
+	@# orchestrator splices onto sys.path. The execution set belongs only in the manifest.
+	@uv sync --all-groups
 
 .PHONY: install/dev
 install/dev: ## Install dev dependencies.
