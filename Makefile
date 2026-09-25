@@ -79,8 +79,8 @@ install/core: deps/sync ## Install core dependencies.
 
 .PHONY: install/all
 install/all: deps/sync ## Install all dependencies.
-	@# No --all-extras: the exec extra belongs in .venv-exec, and installing it here would put
-	@# the execution set on the orchestrator's sys.path, hiding the imports isolation forbids.
+	@# No --all-extras: an extra added later would install into the edit-time venv, which the
+	@# orchestrator splices onto sys.path. The execution set belongs only in the manifest.
 	@uv sync --all-groups
 
 .PHONY: install/dev
