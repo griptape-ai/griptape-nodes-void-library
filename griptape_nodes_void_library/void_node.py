@@ -53,8 +53,8 @@ WINDOWS_PAGEFILE_GUIDANCE = (
 # config.data.max_video_length.
 VOID_MAX_FRAMES = 197
 
-# Script executed inside the library .venv to build a VOID quadmask from a
-# binary primary mask and an optional affected mask. Matches the semantics
+# Script executed inside the execution environment to build a VOID quadmask from
+# a binary primary mask and an optional affected mask. Matches the semantics
 # of _build_quadmask_video in the reference minimax-remover node.
 #
 # Quadmask encoding: 0=remove, 63=overlap, 127=affected, 255=keep
@@ -359,13 +359,20 @@ class VoidNode(SuccessFailureNode):
         return os.path.join(self._get_library_root(), "void-model")
 
     def _get_venv_python(self) -> str:
+        """Interpreter of the library's execution environment.
+
+        The engine resolves pip_dependencies_exec into `.venv-exec` beside the manifest. Torch,
+        imageio and the VOID inference stack exist only there, never in the environment the
+        orchestrator imports this module with, so every subprocess below must use this
+        interpreter rather than `sys.executable`.
+        """
         library_root = self._get_library_root()
         if sys.platform == "win32":
-            return os.path.join(library_root, ".venv", "Scripts", "python.exe")
-        return os.path.join(library_root, ".venv", "bin", "python")
+            return os.path.join(library_root, ".venv-exec", "Scripts", "python.exe")
+        return os.path.join(library_root, ".venv-exec", "bin", "python")
 
     def _probe_video_fps(self, video_path: str, default_fps: float = 24.0) -> float:
-        """Probe a video's frame rate using imageio inside the library .venv.
+        """Probe a video's frame rate using imageio inside the execution environment.
 
         VOID's pass 1 reads every frame of the input and writes out at config.data.fps
         (default 12). If the source is 24 fps and we leave the default, an 8s clip
@@ -407,8 +414,8 @@ class VoidNode(SuccessFailureNode):
         """Re-encode a video at the target fps without dropping any frames.
 
         VOID's pass 2 script hardcodes fps=12 when writing its output. Running this
-        helper reads all frames back (via imageio in the library .venv) and writes
-        them at the correct fps -- every original frame is preserved, only the
+        helper reads all frames back (via imageio in the execution environment) and
+        writes them at the correct fps -- every original frame is preserved, only the
         playback timebase changes. Returns the output path on success, or the
         input path on any failure.
         """
@@ -443,7 +450,7 @@ class VoidNode(SuccessFailureNode):
         return output_path
 
     def _count_video_frames(self, video_path: str) -> int:
-        """Count frames in a video using imageio inside the library .venv."""
+        """Count frames in a video using imageio inside the execution environment."""
         script = (
             "import sys, imageio.v2 as imageio\n"
             "r = imageio.get_reader(sys.argv[1])\n"
@@ -488,10 +495,10 @@ class VoidNode(SuccessFailureNode):
         primary_threshold: int,
         affected_threshold: int,
     ) -> None:
-        """Build the VOID quadmask video by running an inline script in the library .venv.
+        """Build the VOID quadmask video by running an inline script in the execution environment.
 
-        The main Griptape process does not have imageio/numpy installed; the library's
-        .venv does (via requirements.txt installed by void_library_advanced.py).
+        The process that imports this module does not have imageio/numpy; the execution
+        environment the engine builds from pip_dependencies_exec does.
         """
         cmd = [
             self._get_venv_python(),
