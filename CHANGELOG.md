@@ -10,4 +10,4 @@ the `library_version` in `griptape_nodes_void_library/griptape-nodes-library.jso
 
 <!-- Entries go in changelog.d/, one file each. See changelog.d/README.md. -->
 
-[Unreleased]: https://github.com/griptape-ai/griptape-nodes-void-library/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/griptape-ai/griptape-nodes-void-library/compare/f3ae64a221b706f2c2a9df2779b904e1779acb17...HEAD
